@@ -1,52 +1,91 @@
 package main
 
 import (
+	"io"
 	"os"
+	"fmt"
 	"log"
 	"errors"
 	"context"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/openai/openai-go/v3"
 
+	"github.com/hello-llm-2/providers"
 	"github.com/hello-llm-2/ui"
 )
 
-var apiKeys  = map[string]string{
+var apiKeys = map[string]string{
 	"OPENAI_API_KEY": "OpenAI's GPT models",
 	"ANTHROPIC_API_KEY": "Anthropic's Claude models",
 	"GEMINI_API_KEY": "Google's Gemini models",
 };
 
+var systemPrompt providers.AgnosticConversationMessage = providers.AgnosticConversationMessage{
+	Type: providers.MessageTypeSystem,
+	Content: "You are a helpful assistant prompted from a terminal sheel. User expects straight to the point factual answers with minimal noise unless specified otherwise.",
+}
+
 type AppState struct {
 	userPromptBuf []rune
-	llmResponse string
-	client openai.Client
+	chatHistory []providers.AgnosticConversationMessage
+	currentLlmResponse string
+	provider providers.Provider
 
 	userPromptCached string
 	dirtyUserPrompt bool
 }
 
-func NewAppState() *AppState {
+func NewAppState(providerType providers.ProviderType) *AppState {
 	userPromptBuf := make([]rune, 0, 100)
 	userPromptBuf = append(userPromptBuf, '>')
 	userPromptBuf = append(userPromptBuf, ' ')
 
-	llmResponse := ""
+	chatHistory := []providers.AgnosticConversationMessage{
+		systemPrompt,
+	}
 
-	client := openai.NewClient()
+	currentLlmResponse := ""
+
+	var provider providers.Provider
+	switch providerType {
+	case providers.ProviderOpenai:
+		provider = providers.NewOpenaiProvider()
+	default:
+		log.Fatal(providerType, "Unimplemented provider")
+	}
 
 	return &AppState {
 		userPromptBuf,
-		llmResponse,
-		client,
+		chatHistory,
+		currentLlmResponse,
+		provider,
 		string(userPromptBuf), 
 		false,
 	}
 }
 
+func (a *AppState) ContextAppend(extraContext string) {
+	msg := providers.AgnosticConversationMessage {
+		Type: providers.MessageTypeSystem,
+		Content: fmt.Sprintf("Here is some user provided context:\n%s", extraContext),
+	}
+
+	if len(a.chatHistory) == 1 {
+		a.chatHistory = append(a.chatHistory, msg)
+	} else {
+		a.chatHistory = append(a.chatHistory[:1], append([]providers.AgnosticConversationMessage{msg}, a.chatHistory[1:]...)...)
+	}
+}
+
 func (a *AppState) UserPromptAppendRune(r rune) {
 	a.userPromptBuf = append(a.userPromptBuf, r)
+	a.dirtyUserPrompt = true
+}
+
+func (a *AppState) UserPromptSet(val string) {
+	a.UserPromptClear()
+	a.userPromptBuf = append(a.userPromptBuf, []rune(val)...)
 	a.dirtyUserPrompt = true
 }
 
@@ -71,11 +110,26 @@ func (a *AppState) UserPromptClear() {
 }
 
 func (a *AppState) LlmResponsePush(chunk string) {
-	a.llmResponse += chunk
+	a.currentLlmResponse += chunk
 }
 
-func (a *AppState) LlmResponseClear() {
-	a.llmResponse = ""
+func (a *AppState) LlmResponseFinalize() {
+	a.chatHistory = append(
+		a.chatHistory,
+		providers.AgnosticConversationMessage{
+			Type: providers.MessageTypeAssistant,
+			Content: a.currentLlmResponse,
+		})
+	a.currentLlmResponse = ""
+}
+
+func (a *AppState) ChatHistoryAppendUserPrompt() {
+	a.chatHistory = append(
+		a.chatHistory,
+		providers.AgnosticConversationMessage{
+			Type: providers.MessageTypeUser,
+			Content: string(a.UserPromptContent()),
+		})
 }
 
 func (a *AppState) UserPromptContent() []rune {
@@ -90,62 +144,73 @@ func (a *AppState) UserPromptPrefixed() string {
 	return a.userPromptCached
 }
 
-func (a *AppState) LlmResponse() string {
-	return a.llmResponse
+func (a *AppState) UserPromptEmpty() bool {
+	return len(a.userPromptBuf) == 2
 }
 
-func (a *AppState) LlmClient() openai.Client {
-	return a.client
+// Returns the whole chat history appended with the current user prompt
+func (a *AppState) ChatHistory() []providers.AgnosticConversationMessage {
+	return a.chatHistory
 }
 
-func UserPromptSubmit(ctx context.Context, client openai.Client, prompt string, evTx chan<- AppEvent) {
-	ctx, _ = context.WithCancel(ctx)
-	
-	go func() {
-		stream := client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams {
-			Messages: []openai.ChatCompletionMessageParamUnion {
-				openai.UserMessage(prompt),
-			},
-			Seed: openai.Int(0),
-			Model: openai.ChatModelGPT4oMini,
-		})
-
-		acc := openai.ChatCompletionAccumulator{}
-
-		for stream.Next() {
-			chunk := stream.Current()
-			acc.AddChunk(chunk)
-
-			if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-				evTx <-	AppEvent {Type: EvLlmContentArrived, Data: chunk.Choices[0].Delta.Content}
-			}
+// Builds the chat history as a single string, each message separated by newline. Also contains the current LLM response
+func (a *AppState) BuildChatHistory() string {
+	builder := strings.Builder{}
+	for _, msg := range a.chatHistory {
+		switch msg.Type {
+		case providers.MessageTypeSystem:
+			continue
+		case providers.MessageTypeUser:
+			builder.WriteString("> ")
 		}
-	}()
+
+		builder.WriteString(msg.Content)
+		builder.WriteRune('\n')
+	}
+	builder.WriteString(a.currentLlmResponse)
+
+	return builder.String()
+}
+
+func (a *AppState) Provider() providers.Provider {
+	return a.provider
+}
+
+func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversationMessage, provider providers.Provider, evTx chan<- AppEvent) {
+	ctx, _ = context.WithCancel(ctx)
+
+	streamingParams := providers.StreamingRequestParams {
+		Messages: msgs,
+		OnChunkReceived: func(chunk string) {
+			evTx <- AppEvent {Type: EvLlmContentArrived, Data: chunk}
+		},
+		OnStreamingEnd: func(_content string) {
+			evTx <- AppEvent {Type: EvLlmContentFinished}
+		},
+	}
+
+	go provider.StartStreamingRequest(ctx, streamingParams)
 }
 
 func DrawScreen(app *AppState, screen tcell.Screen) {
 	screen.Clear()
 
-	_, height := screen.Size()
+	ui.VerticalStack{
+		Elements: []ui.StackElement{ 
+			ui.NewText(
+				app.BuildChatHistory(),
+				ui.TextParams{
+					HeightMode: ui.HeightFillOrFit,
+				}),
+			ui.NewText(
+				app.UserPromptPrefixed(),
+				ui.TextParams{
+					Anchor: ui.AnchorBottom,
+				}),
+		},
+	}.Draw(screen)
 
-	cursorX, cursorY := ui.NewText(
-		app.UserPromptPrefixed(),
-		ui.TextParams{
-			OffsetsUpwards: true,
-		}).Draw(
-		screen,
-		height-1,
-	)
-
-	ui.NewText(
-		app.LlmResponse(),
-		ui.TextParams{},
-		).Draw(
-		screen,
-		0,
-	)
-
-	screen.ShowCursor(cursorX, cursorY)
+	screen.ShowCursor(0, 0)
 	screen.Show()
 }
 
@@ -163,6 +228,8 @@ func ReceiveTuiEvent(tuiEv <-chan tcell.Event, appEvTx chan<- AppEvent) {
 				case tcell.KeyRune:
 					appEvTx <- AppEvent{Type: EvUserPromptInput, Rune: ev.(*tcell.EventKey).Rune()}
 			}
+		case *tcell.EventResize:
+			appEvTx <- AppEvent{Type: EvTermResize}
 		}
 	}
 }
@@ -179,10 +246,12 @@ type AppEvent struct {
 type AppEventType int
 const (
 	EvQuit AppEventType = iota
+	EvTermResize
 	EvUserPromptInput
 	EvUserPromptPop
 	EvUserPromptSubmit
 	EvLlmContentArrived
+	EvLlmContentFinished
 )
 
 func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxTx chan AppEvent) {
@@ -190,24 +259,52 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 	// Allows the event loop to send transmitters to other parts of the app
 	var evTx chan<- AppEvent = evRxTx
 
+	if len(os.Args) > 1 {
+		initalPrompt := strings.Builder{}
+		initalPrompt.WriteString("Hello, ")
+		initalPrompt.WriteString(strings.Join(os.Args[1:], " "))
+		app.UserPromptSet(initalPrompt.String())
+		app.ChatHistoryAppendUserPrompt()
+		requestCtx, _ := context.WithCancel(ctx)
+		UserPromptSubmit(
+			requestCtx,
+			app.ChatHistory(),
+			app.Provider(),
+			evTx,
+			)
+		app.UserPromptClear()
+	}
+
 	DrawScreen(app, screen)
 
 	for ev := range evRx {
 		switch ev.Type {
 		case EvQuit:
 			return
+		case EvTermResize:
+			DrawScreen(app, screen)
 		case EvUserPromptInput:
 			app.UserPromptAppendRune(ev.Rune)
 		case EvUserPromptPop:
 			app.UserPromptPop()
 		case EvUserPromptSubmit:
-			app.LlmResponseClear() // Clears pv response
+			if app.UserPromptEmpty() {
+				return
+			}
+
+			app.ChatHistoryAppendUserPrompt()
 			requestCtx, _ := context.WithCancel(ctx)
-			prompt := string(app.UserPromptContent())
+			UserPromptSubmit(
+				requestCtx,
+				app.ChatHistory(),
+				app.Provider(),
+				evTx,
+				)
 			app.UserPromptClear()
-			UserPromptSubmit(requestCtx, app.LlmClient(), prompt, evTx)
 		case EvLlmContentArrived:
 			app.LlmResponsePush(ev.Data)
+		case EvLlmContentFinished:
+			app.LlmResponseFinalize()
 		}
 
 		DrawScreen(app, screen)
@@ -215,6 +312,16 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 }
 
 func main() {
+	stdinStat, _ := os.Stdin.Stat()
+	pipedInput := ""
+	if stdinStat.Mode() & os.ModeCharDevice == 0 {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			log.Fatal("Failed to read stdin piped input: ", err)
+		}
+		pipedInput = string(data)
+	}
+
 	screen, err := tcell.NewScreen();
 	err = screen.Init();
 	if err != nil {
@@ -222,7 +329,10 @@ func main() {
 	}
 	defer screen.Fini();
 
-	app := NewAppState()
+	app := NewAppState(providers.ProviderOpenai)
+	if pipedInput != "" {
+		app.ContextAppend(pipedInput)
+	}
 
 	cacheDir, err := os.UserCacheDir();
 	if err != nil {
