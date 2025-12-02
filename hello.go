@@ -5,11 +5,14 @@ import (
 	"os"
 	"fmt"
 	"log"
+	"bufio"
 	"errors"
 	"context"
 	"strings"
+	"syscall"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/adrg/xdg"
 
 	"github.com/hello-llm-2/providers"
 	"github.com/hello-llm-2/ui"
@@ -31,12 +34,13 @@ type AppState struct {
 	chatHistory []providers.AgnosticConversationMessage
 	currentLlmResponse string
 	provider providers.Provider
+	namedPipePath string
 
 	userPromptCached string
 	dirtyUserPrompt bool
 }
 
-func NewAppState(providerType providers.ProviderType) *AppState {
+func NewAppState(providerType providers.ProviderType, namedPipePath string) *AppState {
 	userPromptBuf := make([]rune, 0, 100)
 	userPromptBuf = append(userPromptBuf, '>')
 	userPromptBuf = append(userPromptBuf, ' ')
@@ -60,6 +64,7 @@ func NewAppState(providerType providers.ProviderType) *AppState {
 		chatHistory,
 		currentLlmResponse,
 		provider,
+		namedPipePath,
 		string(userPromptBuf), 
 		false,
 	}
@@ -176,6 +181,10 @@ func (a *AppState) Provider() providers.Provider {
 	return a.provider
 }
 
+func (a *AppState) NamedPipePath() string {
+	return a.namedPipePath
+}
+
 func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversationMessage, provider providers.Provider, evTx chan<- AppEvent) {
 	ctx, _ = context.WithCancel(ctx)
 
@@ -252,7 +261,48 @@ const (
 	EvUserPromptSubmit
 	EvLlmContentArrived
 	EvLlmContentFinished
+	EvFifoReceived
+	EvFifoErr
 )
+
+func ListenToFifoFile(ctx context.Context, path string, evTx chan<- AppEvent) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		f, err := os.OpenFile(path, os.O_RDONLY, os.ModeNamedPipe)
+		if err != nil {
+			evTx <- AppEvent{Type: EvFifoErr}
+			return
+		}
+
+		readBuf := make([]byte, 0, 255)
+		scannerDone := make(chan struct{})
+
+		go func() {
+			scanner := bufio.NewScanner(f)
+			for scanner.Scan() {
+				readBuf = append(readBuf, scanner.Bytes()...)
+			}
+			scannerDone <- struct{}{}
+		}()
+
+		select {
+		case <-ctx.Done():
+			f.Close()
+			<-scannerDone
+			return
+		case <-scannerDone:
+			evTx <- AppEvent{Type: EvFifoReceived, Data: string(readBuf)}
+			readBuf = readBuf[:0]
+		}
+
+		f.Close()
+	}
+}
 
 func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxTx chan AppEvent) {
 	var evRx <-chan AppEvent = evRxTx
@@ -273,6 +323,11 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 			evTx,
 			)
 		app.UserPromptClear()
+	}
+
+	if fifoPath := app.NamedPipePath(); fifoPath != "" {
+		ctx, _ := context.WithCancel(ctx)
+		go ListenToFifoFile(ctx, fifoPath, evTx)
 	}
 
 	DrawScreen(app, screen)
@@ -305,6 +360,8 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 			app.LlmResponsePush(ev.Data)
 		case EvLlmContentFinished:
 			app.LlmResponseFinalize()
+		case EvFifoReceived:
+			app.UserPromptSet(ev.Data)
 		}
 
 		DrawScreen(app, screen)
@@ -329,7 +386,17 @@ func main() {
 	}
 	defer screen.Fini();
 
-	app := NewAppState(providers.ProviderOpenai)
+	namedPipe := "" 
+	runtimeDir := xdg.RuntimeDir
+	if runtimeDir != "" {
+		fifoPath := runtimeDir + "/hello-llm"
+		if err := syscall.Mkfifo(fifoPath, 0666); err == nil {
+			namedPipe = fifoPath
+		}
+		defer os.Remove(fifoPath)
+	}
+
+	app := NewAppState(providers.ProviderOpenai, namedPipe)
 	if pipedInput != "" {
 		app.ContextAppend(pipedInput)
 	}
