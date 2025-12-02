@@ -7,11 +7,6 @@ import (
 )
 
 const (
-	AnchorUp int = iota
-	AnchorBottom
-)
-
-const (
 	HeightFit int = iota
 	HeightFillOrFit
 )
@@ -23,7 +18,6 @@ type VerticalStack struct {
 type StackElement interface {
 	ComputeHeight(screen tcell.Screen) int
 	HeightMode() int
-	Anchor() int
 	Draw(screen tcell.Screen, y int) (int, int)
 }
 
@@ -50,13 +44,13 @@ func (stack VerticalStack) Draw(screen tcell.Screen) {
 	}
 
 	if !requiresConflictResolve {
-		voidSpace := screenHeight - heightSum
+		voidSpace := screenHeight - heightSum - 1
 
 		var spacePerFiller int 
 		if numFillers == 0 {
 			spacePerFiller = 0 // doesn't matter
 		} else {
-			spacePerFiller = voidSpace / numFillers - 1
+			spacePerFiller = voidSpace / numFillers
 		}
 
 		heightCursor := 0
@@ -66,23 +60,23 @@ func (stack VerticalStack) Draw(screen tcell.Screen) {
 
 			el.Draw(screen, y) 
 
-			heightCursor += elH
+			heightCursor += elH 
 			if el.HeightMode() == HeightFillOrFit {
-				heightCursor += spacePerFiller
+				heightCursor += spacePerFiller + 1
 			}
 		}
 	} else {
-		heightCursor := screenHeight - 1
+		heightCursor := screenHeight
 		for i := len(stack.Elements) - 1; i >= 0; i-- {
 			el := stack.Elements[i]
 			elH := elementsHeights[i]
 			
-			y := heightCursor - elH
+			y := heightCursor - elH 
 
 			el.Draw(screen, y)
 
-			heightCursor -= elH - 1
-			if heightCursor < 0 {
+			heightCursor -= elH
+			if heightCursor <= 0 {
 				break
 			}
 		}

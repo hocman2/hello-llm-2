@@ -17,8 +17,8 @@ type Text struct {
 }
 
 type TextParams struct {
-	Anchor int
 	HeightMode int
+	Color tcell.Color
 }
 
 func NewText(content string, params TextParams) *Text {
@@ -72,33 +72,25 @@ func (text *Text) HeightMode() int {
 	return text.params.HeightMode
 }
 
-func (text *Text) Anchor() int {
-	return text.params.Anchor
-}
-
 func (text *Text) Draw(screen tcell.Screen, y int) (int, int) {
+	screenW, _ := screen.Size()
+
 	if !text.linesCached {
 		text.ComputeHeight(screen)
 	}
 
+	style := tcell.StyleDefault.Background(text.params.Color) 
 	lines := text.lines
-	if text.params.Anchor == AnchorBottom {
-		startY := y + len(lines)
-		for i, line := range lines {
-			y := startY + i
-			if y < 0 { 
-				continue 
-			}
-			screen.PutStr(0, y, line)
+	for i, line := range lines {
+		lineY := y + i
+		if lineY < 0 { 
+			continue 
 		}
-	} else if text.params.Anchor == AnchorUp {
-		for i, line := range lines {
-			y := y + i
-			if y < 0 {
-				continue
-			}
-			screen.PutStr(0, y, line)
+
+		if len(line) < screenW {
+			line = line + strings.Repeat(" ", screenW - len(line))
 		}
+		screen.PutStrStyled(0, lineY, line, style)
 	}
 
 	return 0, 0

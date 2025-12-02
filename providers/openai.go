@@ -21,7 +21,9 @@ func (p *OpenaiProvider) StartStreamingRequest(ctx context.Context, params Strea
 		switch msg.Type {
 		case MessageTypeAssistant:
 			messages = append(messages, openai.AssistantMessage(msg.Content))
-		case MessageTypeUser:
+		case MessageTypeUserContext:
+			fallthrough
+		case MessageTypeUser :
 			messages = append(messages, openai.UserMessage(msg.Content))
 		case MessageTypeSystem:
 			messages = append(messages, openai.SystemMessage(msg.Content))

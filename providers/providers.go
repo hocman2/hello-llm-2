@@ -16,6 +16,8 @@ type MessageType int
 const (
 	MessageTypeAssistant MessageType = iota
 	MessageTypeUser
+	// Technically the same as MessageTypeUser but describes that this was context not necessarly worth printing back
+	MessageTypeUserContext
 	MessageTypeSystem
 )
 

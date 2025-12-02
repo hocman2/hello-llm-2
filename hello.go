@@ -29,18 +29,34 @@ var systemPrompt providers.AgnosticConversationMessage = providers.AgnosticConve
 	Content: "You are a helpful assistant prompted from a terminal sheel. User expects straight to the point factual answers with minimal noise unless specified otherwise.",
 }
 
+type NamedPipeFileFailureType int
+
+const (
+	NamedPipeFailureNone NamedPipeFileFailureType = iota
+	NamedPipeFailureAlreadyExists 
+	NamedPipeFailureNotAllowed
+	NamedPipeFailureNoSuitablePath
+	NamedPipeFailureOther
+)
+
+type NamedPipeFile struct {
+	Path string
+	Failure NamedPipeFileFailureType
+}
+
 type AppState struct {
 	userPromptBuf []rune
 	chatHistory []providers.AgnosticConversationMessage
 	currentLlmResponse string
 	provider providers.Provider
-	namedPipePath string
+	namedPipe NamedPipeFile
+	pipedContent string
 
 	userPromptCached string
 	dirtyUserPrompt bool
 }
 
-func NewAppState(providerType providers.ProviderType, namedPipePath string) *AppState {
+func NewAppState(providerType providers.ProviderType, namedPipe NamedPipeFile) *AppState {
 	userPromptBuf := make([]rune, 0, 100)
 	userPromptBuf = append(userPromptBuf, '>')
 	userPromptBuf = append(userPromptBuf, ' ')
@@ -64,7 +80,8 @@ func NewAppState(providerType providers.ProviderType, namedPipePath string) *App
 		chatHistory,
 		currentLlmResponse,
 		provider,
-		namedPipePath,
+		namedPipe,
+		"",
 		string(userPromptBuf), 
 		false,
 	}
@@ -129,6 +146,16 @@ func (a *AppState) LlmResponseFinalize() {
 }
 
 func (a *AppState) ChatHistoryAppendUserPrompt() {
+	if a.pipedContent != "" {
+		a.chatHistory = append(
+			a.chatHistory,
+			providers.AgnosticConversationMessage{
+				Type: providers.MessageTypeUserContext,
+				Content: a.pipedContent,
+			})
+		a.pipedContent = ""
+	}
+
 	a.chatHistory = append(
 		a.chatHistory,
 		providers.AgnosticConversationMessage{
@@ -165,6 +192,8 @@ func (a *AppState) BuildChatHistory() string {
 		switch msg.Type {
 		case providers.MessageTypeSystem:
 			continue
+		case providers.MessageTypeUserContext:
+			continue
 		case providers.MessageTypeUser:
 			builder.WriteString("> ")
 		}
@@ -181,8 +210,16 @@ func (a *AppState) Provider() providers.Provider {
 	return a.provider
 }
 
-func (a *AppState) NamedPipePath() string {
-	return a.namedPipePath
+func (a *AppState) NamedPipe() NamedPipeFile {
+	return a.namedPipe
+}
+
+func (a *AppState) SetPipedContent(content string) {
+	a.pipedContent = content
+}
+
+func (a *AppState) PipedContent() string {
+	return a.pipedContent
 }
 
 func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversationMessage, provider providers.Provider, evTx chan<- AppEvent) {
@@ -204,20 +241,43 @@ func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversation
 func DrawScreen(app *AppState, screen tcell.Screen) {
 	screen.Clear()
 
-	ui.VerticalStack{
-		Elements: []ui.StackElement{ 
+	stackElements := make([]ui.StackElement, 0, 3)
+
+	stackElements = append(stackElements,
+		ui.NewText(
+			app.BuildChatHistory(),
+			ui.TextParams{
+				HeightMode: ui.HeightFillOrFit,
+			}),
+		)
+
+	if pipe := app.NamedPipe(); pipe.Failure == 0 {
+		content := app.PipedContent()
+		if content == "" {
+			content = fmt.Sprintf("Named pipe listening. Write data to the file to add context to your prompt")
+		} else if len(content) > 30 {
+			content = content[:30]+"..."
+		}
+
+		stackElements = append(
+			stackElements, 
 			ui.NewText(
-				app.BuildChatHistory(),
+				content,
 				ui.TextParams{
-					HeightMode: ui.HeightFillOrFit,
+					Color: tcell.ColorDarkBlue,
 				}),
-			ui.NewText(
-				app.UserPromptPrefixed(),
-				ui.TextParams{
-					Anchor: ui.AnchorBottom,
-				}),
-		},
-	}.Draw(screen)
+			)
+	}
+
+	stackElements = append(
+		stackElements, 
+		ui.NewText(
+			app.UserPromptPrefixed(),
+			ui.TextParams{},
+			),
+		)
+
+	ui.VerticalStack{stackElements}.Draw(screen)
 
 	screen.ShowCursor(0, 0)
 	screen.Show()
@@ -325,9 +385,9 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 		app.UserPromptClear()
 	}
 
-	if fifoPath := app.NamedPipePath(); fifoPath != "" {
+	if fifo := app.NamedPipe(); fifo.Failure == 0 {
 		ctx, _ := context.WithCancel(ctx)
-		go ListenToFifoFile(ctx, fifoPath, evTx)
+		go ListenToFifoFile(ctx, fifo.Path, evTx)
 	}
 
 	DrawScreen(app, screen)
@@ -361,7 +421,7 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 		case EvLlmContentFinished:
 			app.LlmResponseFinalize()
 		case EvFifoReceived:
-			app.UserPromptSet(ev.Data)
+			app.SetPipedContent(ev.Data)
 		}
 
 		DrawScreen(app, screen)
@@ -386,14 +446,32 @@ func main() {
 	}
 	defer screen.Fini();
 
-	namedPipe := "" 
+	namedPipe := NamedPipeFile{}
 	runtimeDir := xdg.RuntimeDir
 	if runtimeDir != "" {
 		fifoPath := runtimeDir + "/hello-llm"
-		if err := syscall.Mkfifo(fifoPath, 0666); err == nil {
-			namedPipe = fifoPath
+		namedPipe.Path = fifoPath
+
+		stats, err := os.Lstat(fifoPath)
+		if err != nil {
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				if err := syscall.Mkfifo(fifoPath, 0666); err != nil {
+					namedPipe.Failure = NamedPipeFailureOther
+				} else {
+					defer os.Remove(fifoPath)
+				}
+			case errors.Is(err, os.ErrPermission):
+				namedPipe.Failure = NamedPipeFailureNotAllowed
+			default:
+				namedPipe.Failure = NamedPipeFailureOther
+			}
+			// Maybe the file already exists but is not a fifo file ?
+		} else if (stats.Mode() & os.ModeNamedPipe) != os.ModeNamedPipe {
+			namedPipe.Failure = NamedPipeFailureAlreadyExists
 		}
-		defer os.Remove(fifoPath)
+	} else {
+		namedPipe.Failure = NamedPipeFailureNoSuitablePath
 	}
 
 	app := NewAppState(providers.ProviderOpenai, namedPipe)
