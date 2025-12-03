@@ -45,13 +45,15 @@ type NamedPipeFile struct {
 }
 
 type AppState struct {
+	FreeScrollMode bool
+	ScrollPosition int
+	
 	userPromptBuf []rune
 	chatHistory []providers.AgnosticConversationMessage
 	currentLlmResponse string
 	provider providers.Provider
 	namedPipe NamedPipeFile
 	pipedContent string
-
 	userPromptCached string
 	dirtyUserPrompt bool
 }
@@ -76,6 +78,8 @@ func NewAppState(providerType providers.ProviderType, namedPipe NamedPipeFile) *
 	}
 
 	return &AppState {
+		false,
+		0,
 		userPromptBuf,
 		chatHistory,
 		currentLlmResponse,
@@ -238,48 +242,65 @@ func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversation
 	go provider.StartStreamingRequest(ctx, streamingParams)
 }
 
+func BuildFifoFileElement(app *AppState) *ui.Text {
+	pipe := app.NamedPipe();
+	switch pipe.Failure {
+	case 0:
+		content := app.PipedContent()
+		if content == "" {
+			content = fmt.Sprintf("FIFO file listening. Writing to \"%s\" will add context to the conversation", pipe.Path)
+		} else if len(content) > 30 {
+			content = content[:30]+"..."
+		}
+		return ui.NewText(
+			content,
+			ui.TextParams{
+				Color: tcell.ColorDarkBlue,
+			})
+	default:
+		return ui.NewText(
+			"Not listening to FIFO file... It is not possible to add context to this conversation. I'll implement error message another day 😴",
+			ui.TextParams{
+				Color: tcell.ColorDarkOrange,
+			})
+	}
+}
+
 func DrawScreen(app *AppState, screen tcell.Screen) {
 	screen.Clear()
 
-	stackElements := make([]ui.StackElement, 0, 3)
-
-	stackElements = append(stackElements,
+	stackElements := []ui.StackElement{
 		ui.NewText(
 			app.BuildChatHistory(),
 			ui.TextParams{
 				HeightMode: ui.HeightFillOrFit,
 			}),
-		)
-
-	if pipe := app.NamedPipe(); pipe.Failure == 0 {
-		content := app.PipedContent()
-		if content == "" {
-			content = fmt.Sprintf("Named pipe listening. Write data to the file to add context to your prompt")
-		} else if len(content) > 30 {
-			content = content[:30]+"..."
-		}
-
-		stackElements = append(
-			stackElements, 
-			ui.NewText(
-				content,
-				ui.TextParams{
-					Color: tcell.ColorDarkBlue,
-				}),
-			)
-	}
-
-	stackElements = append(
-		stackElements, 
+		BuildFifoFileElement(app),
 		ui.NewText(
 			app.UserPromptPrefixed(),
 			ui.TextParams{},
 			),
-		)
+	}
+	stack := ui.VerticalStack{Elements: stackElements}
+	view := ui.View {Element: &stack}
+	if app.FreeScrollMode {
+		view.Mode = ui.ViewModeFree
+		view.Yoffset = app.ScrollPosition
+	} else {
+		view.Mode = ui.ViewModeAutoCompute
+	}
 
-	ui.VerticalStack{stackElements}.Draw(screen)
+	view.Compute(screen)
+	// This whole thing gives more responsability than required to that drawing function
+	// I'll have to fix that someday
+	if app.FreeScrollMode && view.AtBottom() {
+		app.FreeScrollMode = false
+		app.ScrollPosition = view.Yoffset
+	} else {
+		app.ScrollPosition = view.Yoffset
+	}
+	view.Draw(screen)
 
-	screen.ShowCursor(0, 0)
 	screen.Show()
 }
 
@@ -294,6 +315,10 @@ func ReceiveTuiEvent(tuiEv <-chan tcell.Event, appEvTx chan<- AppEvent) {
 					appEvTx <- AppEvent {Type: EvUserPromptPop}
 				case tcell.KeyEnter:
 					appEvTx <- AppEvent {Type: EvUserPromptSubmit}
+				case tcell.KeyUp:
+					appEvTx <- AppEvent {Type: EvViewScrollUp}
+				case tcell.KeyDown:
+					appEvTx <- AppEvent {Type: EvViewScrollDown}
 				case tcell.KeyRune:
 					appEvTx <- AppEvent{Type: EvUserPromptInput, Rune: ev.(*tcell.EventKey).Rune()}
 			}
@@ -316,6 +341,8 @@ type AppEventType int
 const (
 	EvQuit AppEventType = iota
 	EvTermResize
+	EvViewScrollUp
+	EvViewScrollDown
 	EvUserPromptInput
 	EvUserPromptPop
 	EvUserPromptSubmit
@@ -346,6 +373,7 @@ func ListenToFifoFile(ctx context.Context, path string, evTx chan<- AppEvent) {
 			scanner := bufio.NewScanner(f)
 			for scanner.Scan() {
 				readBuf = append(readBuf, scanner.Bytes()...)
+				readBuf = append(readBuf, '\n')
 			}
 			scannerDone <- struct{}{}
 		}()
@@ -398,6 +426,14 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 			return
 		case EvTermResize:
 			DrawScreen(app, screen)
+		case EvViewScrollUp:
+			app.FreeScrollMode = true
+			app.ScrollPosition -= 1
+			DrawScreen(app, screen)
+		case EvViewScrollDown:
+			app.FreeScrollMode = true
+			app.ScrollPosition += 1
+			DrawScreen(app, screen)
 		case EvUserPromptInput:
 			app.UserPromptAppendRune(ev.Rune)
 		case EvUserPromptPop:
@@ -446,6 +482,7 @@ func main() {
 	}
 	defer screen.Fini();
 
+	// This is where windows users will lack
 	namedPipe := NamedPipeFile{}
 	runtimeDir := xdg.RuntimeDir
 	if runtimeDir != "" {
@@ -459,16 +496,21 @@ func main() {
 				if err := syscall.Mkfifo(fifoPath, 0666); err != nil {
 					namedPipe.Failure = NamedPipeFailureOther
 				} else {
-					defer os.Remove(fifoPath)
+					// I KNOW ITS MORE RESPECTFUL TO THE USER'S FS TO DO THAT BUT IT SLOWS DOWN SUBSEQUENT STARTUPS
+					// defer os.Remove(fifoPath)
 				}
 			case errors.Is(err, os.ErrPermission):
 				namedPipe.Failure = NamedPipeFailureNotAllowed
 			default:
 				namedPipe.Failure = NamedPipeFailureOther
 			}
-			// Maybe the file already exists but is not a fifo file ?
 		} else if (stats.Mode() & os.ModeNamedPipe) != os.ModeNamedPipe {
+			// This branch is useful for debugging failure, just create a dir at XDG_RUNTIME_DIR called hello-llm
 			namedPipe.Failure = NamedPipeFailureAlreadyExists
+		} else if (stats.Mode() & os.ModeNamedPipe) == os.ModeNamedPipe {
+			// Should we do anything here ?
+			// Its unlikely that the user already has a FIFO file with the app's name being used for other purposes
+			// It probably comes from a previous session
 		}
 	} else {
 		namedPipe.Failure = NamedPipeFailureNoSuitablePath

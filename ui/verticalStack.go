@@ -13,6 +13,10 @@ const (
 
 type VerticalStack struct {
 	Elements []StackElement
+
+	heightComputed bool
+	elementsHeights []int
+	spacePerFiller int
 }
 
 type StackElement interface {
@@ -21,64 +25,58 @@ type StackElement interface {
 	Draw(screen tcell.Screen, y int) (int, int)
 }
 
-func (stack VerticalStack) Draw(screen tcell.Screen) {
-	_, screenHeight := screen.Size()
+func (stack *VerticalStack) ComputeHeight(screen tcell.Screen) int {
+	stack.heightComputed = true
 
-	elementsHeights := make([]int, 0, len(stack.Elements));
+	stack.elementsHeights = make([]int, 0, len(stack.Elements));
 	numFillers := 0
 	for _, el := range stack.Elements {
-		elementsHeights = append(elementsHeights, el.ComputeHeight(screen))
+		stack.elementsHeights = append(
+			stack.elementsHeights,
+			el.ComputeHeight(screen),
+			)
+
 		if el.HeightMode() == HeightFillOrFit {
 			numFillers += 1
 		}
 	}
 
-	requiresConflictResolve := false
 	heightSum := 0
-	for _, elH := range elementsHeights {
+	for _, elH := range stack.elementsHeights {
 		heightSum += elH
-		if heightSum > screenHeight {
-			requiresConflictResolve = true
-			break
-		}
 	}
 
-	if !requiresConflictResolve {
-		voidSpace := screenHeight - heightSum - 1
-
-		var spacePerFiller int 
+	_, screenHeight := screen.Size()
+	voidSpace := screenHeight - heightSum
+	if voidSpace > 0 {
 		if numFillers == 0 {
-			spacePerFiller = 0 // doesn't matter
+			stack.spacePerFiller = 0 // doesn't matter
 		} else {
-			spacePerFiller = voidSpace / numFillers
+			stack.spacePerFiller = voidSpace / numFillers
 		}
 
-		heightCursor := 0
-		for i, el := range stack.Elements {
-			elH := elementsHeights[i]
-			y := heightCursor
-
-			el.Draw(screen, y) 
-
-			heightCursor += elH 
-			if el.HeightMode() == HeightFillOrFit {
-				heightCursor += spacePerFiller + 1
-			}
-		}
+		return heightSum + stack.spacePerFiller * numFillers
 	} else {
-		heightCursor := screenHeight
-		for i := len(stack.Elements) - 1; i >= 0; i-- {
-			el := stack.Elements[i]
-			elH := elementsHeights[i]
-			
-			y := heightCursor - elH 
+		stack.spacePerFiller = 0
+		return heightSum
+	}
+}
 
-			el.Draw(screen, y)
+func (stack *VerticalStack) Draw(screen tcell.Screen, yOffset int) {
+	if !stack.heightComputed {
+		stack.ComputeHeight(screen)
+	}
 
-			heightCursor -= elH
-			if heightCursor <= 0 {
-				break
-			}
+	heightCursor := -yOffset
+	for i, el := range stack.Elements {
+		y := heightCursor
+
+		el.Draw(screen, y) 
+
+		elH := stack.elementsHeights[i]
+		heightCursor += elH 
+		if el.HeightMode() == HeightFillOrFit {
+			heightCursor += stack.spacePerFiller
 		}
 	}
 }
