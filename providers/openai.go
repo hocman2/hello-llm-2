@@ -1,58 +1,90 @@
 package providers
 
 import (
-	"github.com/openai/openai-go/v3"
+	"fmt"
+	"bytes"
+	"os"
+	"io"
+	"net/http"
 	"context"
+	"strings"
+	"encoding/json"
 )
 
-type OpenaiProvider struct {
-	client openai.Client
-}
+type OpenaiProvider struct {}
 
-func NewOpenaiProvider() *OpenaiProvider {
-	return &OpenaiProvider{
-		client: openai.NewClient(),
-	}
-}
+func (_ OpenaiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
+	model := "gpt-4o-mini"
+	url := fmt.Sprintf("https://api.openai.com/v1/chat/completions")
 
-func (p *OpenaiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
-	var messages []openai.ChatCompletionMessageParamUnion
-	for _, msg := range params.Messages {
+	messages := strings.Builder{}
+	for i, msg := range params.Messages {
+		content := strings.ReplaceAll(msg.Content, `\`, `\\`)
+		content = strings.ReplaceAll(content, `"`, `\"`)
+
+		var role string
 		switch msg.Type {
-		case MessageTypeAssistant:
-			messages = append(messages, openai.AssistantMessage(msg.Content))
-		case MessageTypeUserContext:
-			fallthrough
-		case MessageTypeUser :
-			messages = append(messages, openai.UserMessage(msg.Content))
 		case MessageTypeSystem:
-			messages = append(messages, openai.SystemMessage(msg.Content))
+			role = "developer"
+		case MessageTypeAssistant:
+			role = "assistant"
+		case MessageTypeUser, MessageTypeUserContext:
+			role = "user"
+		}
+
+		messages.WriteString(fmt.Sprintf(`{"content":"%s","role":"%s"}`, content, role))
+		if i < len(params.Messages)-1 {
+			 messages.WriteByte(',')
 		}
 	}
 
-	stream := p.client.Chat.Completions.NewStreaming(
-		ctx,
-		openai.ChatCompletionNewParams {
-			Messages: messages,
-			Seed: openai.Int(0),
-			Model: openai.ChatModelGPT4oMini,
-		})
+	body := []byte(fmt.Sprintf(`{"model":"%s","messages":[%s],"stream":true}`, model, messages.String()))
 
-	acc := openai.ChatCompletionAccumulator{}
+	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Authorization", "Bearer " + os.Getenv("OPENAI_API_KEY"))
 
-	for stream.Next() {
-		chunk := stream.Current()
-		acc.AddChunk(chunk)
+	reader, err := startSseRequest(req)
+	if err != nil && params.OnStreamingErr != nil {
+		params.OnStreamingErr(err)
+		return
+	}
+	defer reader.Close()
 
-		if content, ok := acc.JustFinishedContent(); ok {
-			if params.OnStreamingEnd != nil {
-				params.OnStreamingEnd(content)
+	wholeContent := strings.Builder{}
+	for {
+		eventData, err := reader.Next()
+		if err != nil {
+			if err == io.EOF && params.OnStreamingEnd != nil {
+				params.OnStreamingEnd(wholeContent.String())
+				return
+			}
+
+			if params.OnStreamingErr != nil {
+				params.OnStreamingErr(err)
 			}
 		}
 
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			if params.OnChunkReceived != nil {
-				params.OnChunkReceived(chunk.Choices[0].Delta.Content)
+		if len(eventData) > 0 {
+			if eventData == "[DONE]" {
+				params.OnStreamingEnd(wholeContent.String())
+				return
+			}
+
+			var jsonPayload = struct{
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}{}
+
+			json.Unmarshal([]byte(eventData), &jsonPayload)
+			if len(jsonPayload.Choices) > 0 {
+				wholeContent.WriteString(jsonPayload.Choices[0].Delta.Content)
+				params.OnChunkReceived(jsonPayload.Choices[0].Delta.Content)
 			}
 		}
 	}

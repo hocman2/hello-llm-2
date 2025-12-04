@@ -5,24 +5,15 @@ import (
 	"os"
 	"fmt"
 	"bytes"
-	"bufio"
 	"net/http"
 	"context"
 	"strings"
 	"encoding/json"
 )
 
-// This provider's client requires a context
-// We'll just recreate it each time a new request pops in
-type GeminiProvider struct {
-}
+type GeminiProvider struct {}
 
-func NewGeminiProvider() *GeminiProvider {
-	return &GeminiProvider{}
-}
-
-func (p *GeminiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
-	// Given how trash the gemini sdk is i'll use raw json instead
+func (_ GeminiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
 	model := "gemini-2.0-flash-lite"
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse", model)
 
@@ -61,74 +52,46 @@ func (p *GeminiProvider) StartStreamingRequest(ctx context.Context, params Strea
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("x-goog-api-key", os.Getenv("GEMINI_API_KEY"))
 
-	client := http.Client{Timeout: 0}
-	resp, err := client.Do(req)
+	reader, err := startSseRequest(req)
 	if err != nil && params.OnStreamingErr != nil {
-		params.OnStreamingErr(ErrRequestSending)
+		params.OnStreamingErr(err)
+		return
 	}
-	defer resp.Body.Close()
+	defer reader.Close()
 
-	if resp.StatusCode != 200 && params.OnStreamingErr != nil{
-		params.OnStreamingErr(ErrStatusNotOK)
-	}
-
-	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") && params.OnStreamingErr != nil {
-		params.OnStreamingErr(ErrContentTypeNotEventStream)
-	}
-
-	reader := bufio.NewReader(resp.Body)
-	eventData := strings.Builder{}
+	wholeContent := strings.Builder{} 
 	for {
-		line, err := reader.ReadString('\n')
+		eventData, err := reader.Next()
 		if err != nil {
-			if err == io.EOF {
-				params.OnStreamingEnd("")
+			if err == io.EOF && params.OnStreamingEnd != nil{
+				params.OnStreamingEnd(wholeContent.String())
 				return
 			}
 
 			if params.OnStreamingErr != nil {
-				params.OnStreamingErr(ErrReadingBody)
+				params.OnStreamingErr(err)
 			}
 		}
 
-		if strings.TrimSpace(line) == "" {
-			if eventData.Len() > 0 {
-				// mhh nice dirty parsing
-				var jsonPayload = struct{ 
-					Candidates []struct{ 
-						Content struct{ 
-							Parts []struct{ Text string `json:"text"` } `json:"parts"` 
-						} `json:"content"` 
-						FinishReason string `json:"finishReason"`
-					} `json:"candidates"` 
-				}{}
+		if len(eventData) > 0 {
+			// mhh nice dirty parsing
+			var jsonPayload = struct{ 
+				Candidates []struct{ 
+					Content struct{ 
+						Parts []struct{ Text string `json:"text"` } `json:"parts"` 
+					} `json:"content"` 
+					FinishReason string `json:"finishReason"`
+				} `json:"candidates"` 
+			}{}
 
-				json.Unmarshal([]byte(eventData.String()), &jsonPayload)
-				result := jsonPayload.Candidates[0].Content.Parts[0].Text
-				if jsonPayload.Candidates[0].FinishReason == "STOP" {
-					// there is actually a bug here where the first chunk sometimes sends a STOP finish reason for some reasons...
-					result = strings.TrimRight(result, "\n")
-				}
-				params.OnChunkReceived(result)
+			json.Unmarshal([]byte(eventData), &jsonPayload)
+			result := jsonPayload.Candidates[0].Content.Parts[0].Text
+			if jsonPayload.Candidates[0].FinishReason == "STOP" {
+				// there is actually a bug here where the first chunk sometimes sends a STOP finish reason for some reasons...
+				result = strings.TrimRight(result, "\n")
 			}
-
-			eventData = strings.Builder{}
-			continue
-		}
-
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-
-		if idx := strings.IndexByte(line, ':'); idx != -1 {
-			field := line[:idx]
-			value := line[idx+1:]
-			switch field {
-			case "data":
-				eventData.WriteString(strings.TrimSpace(value))
-			default:
-			//dont care 😆🍭
-			}
+			wholeContent.WriteString(result)
+			params.OnChunkReceived(result)
 		}
 	}
 }

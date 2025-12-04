@@ -73,9 +73,9 @@ func NewAppState(providerType providers.ProviderType, namedPipe NamedPipeFile) *
 	var provider providers.Provider
 	switch providerType {
 	case providers.ProviderOpenai:
-		provider = providers.NewOpenaiProvider()
+		provider = providers.OpenaiProvider{}
 	case providers.ProviderGemini:
-		provider = providers.NewGeminiProvider()
+		provider = providers.GeminiProvider{}
 	default:
 		log.Fatal(providerType, "Unimplemented provider")
 	}
@@ -563,7 +563,7 @@ func main() {
 		namedPipe.Failure = NamedPipeFailureNoSuitablePath
 	}
 
-	app := NewAppState(providers.ProviderGemini, namedPipe)
+	app := NewAppState(providers.ProviderOpenai, namedPipe)
 	if pipedInput != "" {
 		app.ContextAppend(pipedInput)
 	}
