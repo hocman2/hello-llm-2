@@ -235,8 +235,6 @@ func (a *AppState) PipedContent() string {
 }
 
 func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversationMessage, provider providers.Provider, evTx chan<- AppEvent) {
-	ctx, _ = context.WithCancel(ctx)
-
 	streamingParams := providers.StreamingRequestParams {
 		Messages: msgs,
 		OnChunkReceived: func(chunk string) {
@@ -246,7 +244,7 @@ func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversation
 			evTx <- AppEvent {Type: EvLlmContentFinished}
 		},
 		OnStreamingErr: func(err error) {
-			evTx <- AppEvent {Type: EvAppShowUserErr, Data: err.Error()}
+			evTx <- AppEvent {Type: EvAppShowUserErr, Error: err}
 		},
 	}
 
@@ -358,6 +356,7 @@ type AppEvent struct {
 	Type AppEventType
 	Rune rune
 	Data string
+	Error error
 }
 
 type AppEventType int
@@ -472,7 +471,9 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 		case EvQuit:
 			return
 		case EvAppShowUserErr:
-			app.UserError = ev.Data
+			if ev.Error != context.Canceled {
+				app.UserError = ev.Error.Error()
+			}
 		case EvTermResize:
 			DrawScreen(app, screen)
 		case EvViewScrollUp:
@@ -563,7 +564,7 @@ func main() {
 		namedPipe.Failure = NamedPipeFailureNoSuitablePath
 	}
 
-	app := NewAppState(providers.ProviderOpenai, namedPipe)
+	app := NewAppState(providers.ProviderGemini, namedPipe)
 	if pipedInput != "" {
 		app.ContextAppend(pipedInput)
 	}

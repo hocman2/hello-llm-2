@@ -13,18 +13,36 @@ import (
 
 type GeminiProvider struct {}
 
+type part struct {
+	Text string `json:"text"`
+}
+
+type systemInstruction struct {
+	Parts []part `json:"parts"`
+}
+
+type apiMessage struct {
+	Role string `json:"role"`
+	Parts []part `json:"parts"`
+}
+
+type thinkingConfig struct {
+	ThinkingBudget int `json:"thinkingBudget"`
+}
+
+type generationConfig struct {
+	ThinkingConfig thinkingConfig `json:"thinkingConfig"`
+}
+
 func (_ GeminiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
 	model := "gemini-2.0-flash-lite"
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse", model)
 
-	messageHistory := strings.Builder{}
 	systemPrompt := strings.Builder{}	
-	for i, msg := range params.Messages {
-		content := strings.ReplaceAll(msg.Content, `\`, `\\`)
-		content = strings.ReplaceAll(content, `"`, `\"`)
-
+	messages := make([]apiMessage, 0, len(params.Messages))
+	for _, msg := range params.Messages {
 		if msg.Type == MessageTypeSystem {
-			systemPrompt.WriteString(content)
+			systemPrompt.WriteString(msg.Content)
 			systemPrompt.WriteByte(' ')
 		} else {
 			var role string
@@ -34,17 +52,29 @@ func (_ GeminiProvider) StartStreamingRequest(ctx context.Context, params Stream
 				role = "user"
 			}
 
-			messageHistory.WriteString(
-				fmt.Sprintf(`{"role": "%s", "parts": [{"text": "%s"}]}`, role, content),
-				)
-
-			if i < len(params.Messages)-1 {
-				messageHistory.WriteByte(',')
-			}
+			messages = append(messages, apiMessage{
+				Role: role,
+				Parts: []part{
+					part {
+						Text: msg.Content,
+					},
+				},
+			})
 		}
 	}
 
-	body := []byte(fmt.Sprintf(`{"system_instruction":{"parts":[{"text":"%s"}]},"contents":[%s],"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}`, strings.TrimSpace(systemPrompt.String()), messageHistory.String()))
+	// i hate google
+	bodyStruct := map[string]any {
+		"system_instruction": systemInstruction {
+			Parts: []part{part{Text:systemPrompt.String()}},
+		},
+		"contents": messages,
+		"generationConfig": generationConfig{ThinkingConfig:thinkingConfig{ThinkingBudget: 0}},
+	}
+	body, err := json.Marshal(bodyStruct)
+	if err != nil {
+		panic(err)
+	}
 
 	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 	req.Header.Set("Accept", "text/event-stream")
@@ -71,6 +101,7 @@ func (_ GeminiProvider) StartStreamingRequest(ctx context.Context, params Stream
 			if params.OnStreamingErr != nil {
 				params.OnStreamingErr(err)
 			}
+			return
 		}
 
 		if len(eventData) > 0 {

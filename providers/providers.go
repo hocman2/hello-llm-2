@@ -1,6 +1,8 @@
 package providers
 
 import (
+	"io"
+	"fmt"
 	"context"
 	"errors"
 	"net/http"
@@ -61,7 +63,9 @@ func startSseRequest(req *http.Request) (*sseReader, error) {
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, errors.New(resp.Status)
+		errReason, _ := io.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		return nil, errors.New(fmt.Sprintf("%s: %s", resp.Status, string(errReason)))
 	}
 
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
