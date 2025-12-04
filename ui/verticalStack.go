@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"reflect"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -17,6 +18,19 @@ type VerticalStack struct {
 	heightComputed bool
 	elementsHeights []int
 	spacePerFiller int
+}
+
+func NewVerticalStack(elems []StackElement) *VerticalStack {
+	filteredElems := make([]StackElement, 0, len(elems))
+	for _, el := range elems {
+		if !reflect.ValueOf(el).IsNil() {
+			filteredElems = append(filteredElems, el)
+		}
+	}
+
+	return &VerticalStack{
+		Elements: filteredElems,
+	}
 }
 
 type StackElement interface {

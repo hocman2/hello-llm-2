@@ -26,7 +26,7 @@ var apiKeys = map[string]string{
 
 var systemPrompt providers.AgnosticConversationMessage = providers.AgnosticConversationMessage{
 	Type: providers.MessageTypeSystem,
-	Content: "You are a helpful assistant prompted from a terminal sheel. User expects straight to the point factual answers with minimal noise unless specified otherwise.",
+	Content: "You are a helpful assistant prompted from a terminal shell. User expects straight to the point factual answers with minimal noise unless specified otherwise.",
 }
 
 type NamedPipeFileFailureType int
@@ -47,7 +47,8 @@ type NamedPipeFile struct {
 type AppState struct {
 	FreeScrollMode bool
 	ScrollPosition int
-	
+	UserError string
+
 	userPromptBuf []rune
 	chatHistory []providers.AgnosticConversationMessage
 	currentLlmResponse string
@@ -73,6 +74,8 @@ func NewAppState(providerType providers.ProviderType, namedPipe NamedPipeFile) *
 	switch providerType {
 	case providers.ProviderOpenai:
 		provider = providers.NewOpenaiProvider()
+	case providers.ProviderGemini:
+		provider = providers.NewGeminiProvider()
 	default:
 		log.Fatal(providerType, "Unimplemented provider")
 	}
@@ -80,6 +83,7 @@ func NewAppState(providerType providers.ProviderType, namedPipe NamedPipeFile) *
 	return &AppState {
 		false,
 		0,
+		"",
 		userPromptBuf,
 		chatHistory,
 		currentLlmResponse,
@@ -140,6 +144,10 @@ func (a *AppState) LlmResponsePush(chunk string) {
 }
 
 func (a *AppState) LlmResponseFinalize() {
+	if a.currentLlmResponse == "" {
+		return
+	}
+
 	a.chatHistory = append(
 		a.chatHistory,
 		providers.AgnosticConversationMessage{
@@ -190,7 +198,7 @@ func (a *AppState) ChatHistory() []providers.AgnosticConversationMessage {
 }
 
 // Builds the chat history as a single string, each message separated by newline. Also contains the current LLM response
-func (a *AppState) BuildChatHistory() string {
+func (a *AppState) ChatHistoryBuild() string {
 	builder := strings.Builder{}
 	for _, msg := range a.chatHistory {
 		switch msg.Type {
@@ -218,7 +226,7 @@ func (a *AppState) NamedPipe() NamedPipeFile {
 	return a.namedPipe
 }
 
-func (a *AppState) SetPipedContent(content string) {
+func (a *AppState) PipedContentSet(content string) {
 	a.pipedContent = content
 }
 
@@ -236,6 +244,9 @@ func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversation
 		},
 		OnStreamingEnd: func(_content string) {
 			evTx <- AppEvent {Type: EvLlmContentFinished}
+		},
+		OnStreamingErr: func(err error) {
+			evTx <- AppEvent {Type: EvAppShowUserErr, Data: err.Error()}
 		},
 	}
 
@@ -266,23 +277,36 @@ func BuildFifoFileElement(app *AppState) *ui.Text {
 	}
 }
 
+func BuildUserError(app *AppState) *ui.Text {
+	return nil
+	if app.UserError != "" {
+		return ui.NewText(
+			app.UserError,
+			ui.TextParams{
+				Color: tcell.ColorDarkRed,
+			})
+	} else {
+		return nil
+	}
+}
+
 func DrawScreen(app *AppState, screen tcell.Screen) {
 	screen.Clear()
 
 	stackElements := []ui.StackElement{
 		ui.NewText(
-			app.BuildChatHistory(),
+			app.ChatHistoryBuild(),
 			ui.TextParams{
 				HeightMode: ui.HeightFillOrFit,
 			}),
+		BuildUserError(app),
 		BuildFifoFileElement(app),
 		ui.NewText(
 			app.UserPromptPrefixed(),
 			ui.TextParams{},
 			),
 	}
-	stack := ui.VerticalStack{Elements: stackElements}
-	view := ui.View {Element: &stack}
+	view := ui.View {Element: ui.NewVerticalStack(stackElements)}
 	if app.FreeScrollMode {
 		view.Mode = ui.ViewModeFree
 		view.Yoffset = app.ScrollPosition
@@ -340,6 +364,7 @@ type AppEvent struct {
 type AppEventType int
 const (
 	EvQuit AppEventType = iota
+	EvAppShowUserErr
 	EvTermResize
 	EvViewScrollUp
 	EvViewScrollDown
@@ -397,25 +422,41 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 	// Allows the event loop to send transmitters to other parts of the app
 	var evTx chan<- AppEvent = evRxTx
 
-	if len(os.Args) > 1 {
-		initalPrompt := strings.Builder{}
-		initalPrompt.WriteString("Hello, ")
-		initalPrompt.WriteString(strings.Join(os.Args[1:], " "))
-		app.UserPromptSet(initalPrompt.String())
+	streamingContent := false
+
+	var requestCancelFunc context.CancelFunc
+	submitPrompt := func() {
+		if requestCancelFunc != nil {
+			requestCancelFunc()
+			requestCancelFunc = nil
+		}
+		app.LlmResponseFinalize()
+
 		app.ChatHistoryAppendUserPrompt()
-		requestCtx, _ := context.WithCancel(ctx)
+		var rCtx context.Context
+		rCtx, requestCancelFunc = context.WithCancel(ctx)
 		UserPromptSubmit(
-			requestCtx,
+			rCtx,
 			app.ChatHistory(),
 			app.Provider(),
 			evTx,
 			)
 		app.UserPromptClear()
+		streamingContent = true
+	}
+
+	if len(os.Args) > 1 {
+		initalPrompt := strings.Builder{}
+		initalPrompt.WriteString("Hello, ")
+		initalPrompt.WriteString(strings.Join(os.Args[1:], " "))
+		app.UserPromptSet(initalPrompt.String())
+		submitPrompt()
 	}
 
 	if fifo := app.NamedPipe(); fifo.Failure == 0 {
-		ctx, _ := context.WithCancel(ctx)
-		go ListenToFifoFile(ctx, fifo.Path, evTx)
+		fifoCtx, fifoCancel := context.WithCancel(ctx)
+		go ListenToFifoFile(fifoCtx, fifo.Path, evTx)
+		defer fifoCancel()
 	}
 
 	DrawScreen(app, screen)
@@ -424,6 +465,8 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 		switch ev.Type {
 		case EvQuit:
 			return
+		case EvAppShowUserErr:
+			app.UserError = ev.Data
 		case EvTermResize:
 			DrawScreen(app, screen)
 		case EvViewScrollUp:
@@ -440,24 +483,27 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 			app.UserPromptPop()
 		case EvUserPromptSubmit:
 			if app.UserPromptEmpty() {
-				return
+				if !streamingContent {
+					return
+				} else if requestCancelFunc != nil {
+					requestCancelFunc()
+					requestCancelFunc = nil
+					app.LlmResponseFinalize()
+				}
+			} else {
+				submitPrompt()
 			}
-
-			app.ChatHistoryAppendUserPrompt()
-			requestCtx, _ := context.WithCancel(ctx)
-			UserPromptSubmit(
-				requestCtx,
-				app.ChatHistory(),
-				app.Provider(),
-				evTx,
-				)
-			app.UserPromptClear()
 		case EvLlmContentArrived:
 			app.LlmResponsePush(ev.Data)
 		case EvLlmContentFinished:
+			if requestCancelFunc != nil {
+				requestCancelFunc()
+				requestCancelFunc = nil
+			}
 			app.LlmResponseFinalize()
+			streamingContent = false
 		case EvFifoReceived:
-			app.SetPipedContent(ev.Data)
+			app.PipedContentSet(ev.Data)
 		}
 
 		DrawScreen(app, screen)
@@ -516,7 +562,7 @@ func main() {
 		namedPipe.Failure = NamedPipeFailureNoSuitablePath
 	}
 
-	app := NewAppState(providers.ProviderOpenai, namedPipe)
+	app := NewAppState(providers.ProviderGemini, namedPipe)
 	if pipedInput != "" {
 		app.ContextAppend(pipedInput)
 	}
