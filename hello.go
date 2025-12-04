@@ -278,7 +278,6 @@ func BuildFifoFileElement(app *AppState) *ui.Text {
 }
 
 func BuildUserError(app *AppState) *ui.Text {
-	return nil
 	if app.UserError != "" {
 		return ui.NewText(
 			app.UserError,
@@ -425,12 +424,19 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 	streamingContent := false
 
 	var requestCancelFunc context.CancelFunc
-	submitPrompt := func() {
+	tryCancelRequest := func() bool {
 		if requestCancelFunc != nil {
 			requestCancelFunc()
 			requestCancelFunc = nil
+			return true
 		}
-		app.LlmResponseFinalize()
+		return false
+	}
+
+	submitPrompt := func() {
+		if tryCancelRequest() {
+			app.LlmResponseFinalize()
+		}
 
 		app.ChatHistoryAppendUserPrompt()
 		var rCtx context.Context
@@ -485,9 +491,7 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 			if app.UserPromptEmpty() {
 				if !streamingContent {
 					return
-				} else if requestCancelFunc != nil {
-					requestCancelFunc()
-					requestCancelFunc = nil
+				} else if tryCancelRequest() {
 					app.LlmResponseFinalize()
 				}
 			} else {
@@ -496,10 +500,7 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 		case EvLlmContentArrived:
 			app.LlmResponsePush(ev.Data)
 		case EvLlmContentFinished:
-			if requestCancelFunc != nil {
-				requestCancelFunc()
-				requestCancelFunc = nil
-			}
+			tryCancelRequest()
 			app.LlmResponseFinalize()
 			streamingContent = false
 		case EvFifoReceived:

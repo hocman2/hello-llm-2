@@ -5,7 +5,6 @@ import (
 	"os"
 	"fmt"
 	"bytes"
-	"errors"
 	"bufio"
 	"net/http"
 	"context"
@@ -122,7 +121,6 @@ func (p *GeminiProvider) StartStreamingRequest(ctx context.Context, params Strea
 		}
 
 		if idx := strings.IndexByte(line, ':'); idx != -1 {
-			params.OnStreamingErr(errors.New(line))
 			field := line[:idx]
 			value := line[idx+1:]
 			switch field {
