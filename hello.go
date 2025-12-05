@@ -5,6 +5,7 @@ import (
 	"os"
 	"fmt"
 	"log"
+	"flag"
 	"bufio"
 	"errors"
 	"context"
@@ -14,229 +15,54 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/adrg/xdg"
 
+	"github.com/hello-llm-2/app"
 	"github.com/hello-llm-2/providers"
 	"github.com/hello-llm-2/ui"
 )
+const SystemPrompt string = "You are a helpful assistant prompted from a terminal shell. User expects straight to the point factual answers with minimal noise unless specified otherwise."
 
-var apiKeys = map[string]string{
-	"OPENAI_API_KEY": "OpenAI's GPT models",
-	"ANTHROPIC_API_KEY": "Anthropic's Claude models",
-	"GEMINI_API_KEY": "Google's Gemini models",
-};
+// Returns the new YOffset (if computed, else unchanged) and if the view is at the bottom or not
+func DrawScreen(app *app.AppState, screen tcell.Screen) (int, bool) {
+	screen.Clear()
 
-var systemPrompt providers.AgnosticConversationMessage = providers.AgnosticConversationMessage{
-	Type: providers.MessageTypeSystem,
-	Content: "You are a helpful assistant prompted from a terminal shell. User expects straight to the point factual answers with minimal noise unless specified otherwise.",
-}
-
-type NamedPipeFileFailureType int
-
-const (
-	NamedPipeFailureNone NamedPipeFileFailureType = iota
-	NamedPipeFailureAlreadyExists 
-	NamedPipeFailureNotAllowed
-	NamedPipeFailureNoSuitablePath
-	NamedPipeFailureOther
-)
-
-type NamedPipeFile struct {
-	Path string
-	Failure NamedPipeFileFailureType
-}
-
-type AppState struct {
-	FreeScrollMode bool
-	ScrollPosition int
-	UserError string
-
-	userPromptBuf []rune
-	chatHistory []providers.AgnosticConversationMessage
-	currentLlmResponse string
-	provider providers.Provider
-	namedPipe NamedPipeFile
-	pipedContent string
-	userPromptCached string
-	dirtyUserPrompt bool
-}
-
-func NewAppState(providerType providers.ProviderType, namedPipe NamedPipeFile) *AppState {
-	userPromptBuf := make([]rune, 0, 100)
-	userPromptBuf = append(userPromptBuf, '>')
-	userPromptBuf = append(userPromptBuf, ' ')
-
-	chatHistory := []providers.AgnosticConversationMessage{
-		systemPrompt,
+	elements := []ui.StackElement{
+		ui.NewText(
+			app.ChatHistoryBuild(),
+			ui.TextParams{
+				HeightMode: ui.HeightFillOrFit,
+			}),
+		ui.BuildUserErrorUiElement(app.UserError),
+		ui.BuildFifoFileUiElement(
+			app.PipedContent(),
+			app.NamedPipe().Path,
+			app.NamedPipe().Failure != 0,
+			),
+		ui.NewText(
+			app.UserPromptPrefixed(),
+			ui.TextParams{},
+			),
 	}
 
-	currentLlmResponse := ""
-
-	var provider providers.Provider
-	switch providerType {
-	case providers.ProviderOpenai:
-		provider = providers.OpenaiProvider{}
-	case providers.ProviderGemini:
-		provider = providers.GeminiProvider{}
-	default:
-		log.Fatal(providerType, "Unimplemented provider")
+	view := ui.View {
+		Element: ui.NewVerticalStack(elements),
 	}
 
-	return &AppState {
-		false,
-		0,
-		"",
-		userPromptBuf,
-		chatHistory,
-		currentLlmResponse,
-		provider,
-		namedPipe,
-		"",
-		string(userPromptBuf), 
-		false,
-	}
-}
-
-func (a *AppState) ContextAppend(extraContext string) {
-	msg := providers.AgnosticConversationMessage {
-		Type: providers.MessageTypeSystem,
-		Content: fmt.Sprintf("Here is some user provided context:\n%s", extraContext),
-	}
-
-	if len(a.chatHistory) == 1 {
-		a.chatHistory = append(a.chatHistory, msg)
+	if app.FreeScrollMode {
+		view.Mode = ui.ViewModeFree
+		view.Yoffset = app.ScrollPosition
 	} else {
-		a.chatHistory = append(a.chatHistory[:1], append([]providers.AgnosticConversationMessage{msg}, a.chatHistory[1:]...)...)
-	}
-}
-
-func (a *AppState) UserPromptAppendRune(r rune) {
-	a.userPromptBuf = append(a.userPromptBuf, r)
-	a.dirtyUserPrompt = true
-}
-
-func (a *AppState) UserPromptSet(val string) {
-	a.UserPromptClear()
-	a.userPromptBuf = append(a.userPromptBuf, []rune(val)...)
-	a.dirtyUserPrompt = true
-}
-
-func (a *AppState) UserPromptPop() {
-	// Prefix len is 2, too lazy to make a const
-	// will come in the future
-	if len(a.userPromptBuf) == 2 {
-		return
+		view.Mode = ui.ViewModeAutoCompute
 	}
 
-	a.userPromptBuf = a.userPromptBuf[:len(a.userPromptBuf)-1]
-	a.dirtyUserPrompt = true
+	view.Draw(screen)
+	screen.Show()
+	return view.Yoffset, view.AtBottom()
 }
 
-func (a *AppState) UserPromptClear() {
-	if len(a.userPromptBuf) == 2 {
-		return
-	}
-
-	a.userPromptBuf = a.userPromptBuf[:2]
-	a.dirtyUserPrompt = true
-}
-
-func (a *AppState) LlmResponsePush(chunk string) {
-	a.currentLlmResponse += chunk
-}
-
-func (a *AppState) LlmResponseFinalize() {
-	if a.currentLlmResponse == "" {
-		return
-	}
-
-	a.chatHistory = append(
-		a.chatHistory,
-		providers.AgnosticConversationMessage{
-			Type: providers.MessageTypeAssistant,
-			Content: a.currentLlmResponse,
-		})
-	a.currentLlmResponse = ""
-}
-
-func (a *AppState) ChatHistoryAppendUserPrompt() {
-	if a.pipedContent != "" {
-		a.chatHistory = append(
-			a.chatHistory,
-			providers.AgnosticConversationMessage{
-				Type: providers.MessageTypeUserContext,
-				Content: a.pipedContent,
-			})
-		a.pipedContent = ""
-	}
-
-	a.chatHistory = append(
-		a.chatHistory,
-		providers.AgnosticConversationMessage{
-			Type: providers.MessageTypeUser,
-			Content: string(a.UserPromptContent()),
-		})
-}
-
-func (a *AppState) UserPromptContent() []rune {
-	return a.userPromptBuf[2:]
-}
-
-func (a *AppState) UserPromptPrefixed() string {
-	if a.dirtyUserPrompt {
-		a.userPromptCached = string(a.userPromptBuf)
-	}
-
-	return a.userPromptCached
-}
-
-func (a *AppState) UserPromptEmpty() bool {
-	return len(a.userPromptBuf) == 2
-}
-
-// Returns the whole chat history appended with the current user prompt
-func (a *AppState) ChatHistory() []providers.AgnosticConversationMessage {
-	return a.chatHistory
-}
-
-// Builds the chat history as a single string, each message separated by newline. Also contains the current LLM response
-func (a *AppState) ChatHistoryBuild() string {
-	builder := strings.Builder{}
-	for _, msg := range a.chatHistory {
-		switch msg.Type {
-		case providers.MessageTypeSystem:
-			continue
-		case providers.MessageTypeUserContext:
-			continue
-		case providers.MessageTypeUser:
-			builder.WriteString("> ")
-		}
-
-		builder.WriteString(msg.Content)
-		builder.WriteRune('\n')
-	}
-	builder.WriteString(a.currentLlmResponse)
-
-	return builder.String()
-}
-
-func (a *AppState) Provider() providers.Provider {
-	return a.provider
-}
-
-func (a *AppState) NamedPipe() NamedPipeFile {
-	return a.namedPipe
-}
-
-func (a *AppState) PipedContentSet(content string) {
-	a.pipedContent = content
-}
-
-func (a *AppState) PipedContent() string {
-	return a.pipedContent
-}
-
-func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversationMessage, provider providers.Provider, evTx chan<- AppEvent) {
+func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversationMessage, provider providers.Provider, allowWebSearch bool, evTx chan<- AppEvent) {
 	streamingParams := providers.StreamingRequestParams {
 		Messages: msgs,
+		AllowWebSearch: allowWebSearch,
 		OnChunkReceived: func(chunk string) {
 			evTx <- AppEvent {Type: EvLlmContentArrived, Data: chunk}
 		},
@@ -249,80 +75,6 @@ func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversation
 	}
 
 	go provider.StartStreamingRequest(ctx, streamingParams)
-}
-
-func BuildFifoFileElement(app *AppState) *ui.Text {
-	pipe := app.NamedPipe();
-	switch pipe.Failure {
-	case 0:
-		content := app.PipedContent()
-		if content == "" {
-			content = fmt.Sprintf("FIFO file listening. Writing to \"%s\" will add context to the conversation", pipe.Path)
-		} else if len(content) > 30 {
-			content = content[:30]+"..."
-		}
-		return ui.NewText(
-			content,
-			ui.TextParams{
-				Color: tcell.ColorDarkBlue,
-			})
-	default:
-		return ui.NewText(
-			"Not listening to FIFO file... It is not possible to add context to this conversation. I'll implement error message another day 😴",
-			ui.TextParams{
-				Color: tcell.ColorDarkOrange,
-			})
-	}
-}
-
-func BuildUserError(app *AppState) *ui.Text {
-	if app.UserError != "" {
-		return ui.NewText(
-			app.UserError,
-			ui.TextParams{
-				Color: tcell.ColorDarkRed,
-			})
-	} else {
-		return nil
-	}
-}
-
-func DrawScreen(app *AppState, screen tcell.Screen) {
-	screen.Clear()
-
-	stackElements := []ui.StackElement{
-		ui.NewText(
-			app.ChatHistoryBuild(),
-			ui.TextParams{
-				HeightMode: ui.HeightFillOrFit,
-			}),
-		BuildUserError(app),
-		BuildFifoFileElement(app),
-		ui.NewText(
-			app.UserPromptPrefixed(),
-			ui.TextParams{},
-			),
-	}
-	view := ui.View {Element: ui.NewVerticalStack(stackElements)}
-	if app.FreeScrollMode {
-		view.Mode = ui.ViewModeFree
-		view.Yoffset = app.ScrollPosition
-	} else {
-		view.Mode = ui.ViewModeAutoCompute
-	}
-
-	view.Compute(screen)
-	// This whole thing gives more responsability than required to that drawing function
-	// I'll have to fix that someday
-	if app.FreeScrollMode && view.AtBottom() {
-		app.FreeScrollMode = false
-		app.ScrollPosition = view.Yoffset
-	} else {
-		app.ScrollPosition = view.Yoffset
-	}
-	view.Draw(screen)
-
-	screen.Show()
 }
 
 func ReceiveTuiEvent(tuiEv <-chan tcell.Event, appEvTx chan<- AppEvent) {
@@ -347,9 +99,6 @@ func ReceiveTuiEvent(tuiEv <-chan tcell.Event, appEvTx chan<- AppEvent) {
 			appEvTx <- AppEvent{Type: EvTermResize}
 		}
 	}
-}
-
-func WarmupCache(cacheFilePath string) {
 }
 
 type AppEvent struct {
@@ -415,7 +164,7 @@ func ListenToFifoFile(ctx context.Context, path string, evTx chan<- AppEvent) {
 	}
 }
 
-func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxTx chan AppEvent) {
+func RunEventLoop(ctx context.Context, app *app.AppState, args []string, screen tcell.Screen, evRxTx chan AppEvent) {
 	var evRx <-chan AppEvent = evRxTx
 	// Allows the event loop to send transmitters to other parts of the app
 	var evTx chan<- AppEvent = evRxTx
@@ -444,16 +193,17 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 			rCtx,
 			app.ChatHistory(),
 			app.Provider(),
+			app.Cfg().AllowWebSearch,
 			evTx,
 			)
 		app.UserPromptClear()
 		streamingContent = true
 	}
 
-	if len(os.Args) > 1 {
+	if len(args) > 0 {
 		initalPrompt := strings.Builder{}
 		initalPrompt.WriteString("Hello, ")
-		initalPrompt.WriteString(strings.Join(os.Args[1:], " "))
+		initalPrompt.WriteString(strings.Join(args, " "))
 		app.UserPromptSet(initalPrompt.String())
 		submitPrompt()
 	}
@@ -475,15 +225,13 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 				app.UserError = ev.Error.Error()
 			}
 		case EvTermResize:
-			DrawScreen(app, screen)
+			// redraw -- Done below
 		case EvViewScrollUp:
 			app.FreeScrollMode = true
 			app.ScrollPosition -= 1
-			DrawScreen(app, screen)
 		case EvViewScrollDown:
 			app.FreeScrollMode = true
 			app.ScrollPosition += 1
-			DrawScreen(app, screen)
 		case EvUserPromptInput:
 			app.UserPromptAppendRune(ev.Rune)
 		case EvUserPromptPop:
@@ -508,11 +256,121 @@ func RunEventLoop(ctx context.Context, app *AppState, screen tcell.Screen, evRxT
 			app.PipedContentSet(ev.Data)
 		}
 
-		DrawScreen(app, screen)
+		newYOffset, atBottom := DrawScreen(app, screen)
+		if app.FreeScrollMode && atBottom {
+			app.FreeScrollMode = false
+		} 
+		app.ScrollPosition = newYOffset
 	}
 }
 
+var (
+	ErrConfigCorrupted error = errors.New("Config corrupted")
+	ErrConfigCreation error = errors.New("An unknown error occured while writing to config file")
+)
+
+func ReadConfig(cfg *app.AppConfig) error {
+	cfgDir, err := os.UserConfigDir()
+	cfgFile, err := os.Open(cfgDir + "/hello-llm.cfg")
+	if err != nil {
+		return err
+	}
+	defer cfgFile.Close()
+
+	scanner := bufio.NewScanner(cfgFile)
+	for scanner.Scan() {
+		line := scanner.Text()
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			return ErrConfigCorrupted
+		}
+
+		switch key {
+		case "default_provider":
+			var err error
+			cfg.Provider, err = providers.ProviderTypeFromString(value)
+			if err != nil {
+				return ErrConfigCorrupted
+			}
+		}
+	}
+
+	return nil
+}
+
+func InitConfig(cfg *app.AppConfig) error {
+	fmt.Println("You are seeing this screen because we need to build the default config for 'hello-llm'")
+	fmt.Println("Please select your preferred default LLM provider:")
+	fmt.Println("\t1. OpenAI (Uses OPENAI_API_KEY environment variable)")
+	fmt.Println("\t2. Anthropic (Uses X environment variable)")
+	fmt.Println("\t3. Google (Uses GEMINI_API_KEY environment variable)")
+	fmt.Println("\t4. xAI (Uses GROK_API_KEY environment variable)")
+
+	for {
+		var choice int
+		fmt.Print("> ")
+		n, err := fmt.Scan(&choice)
+		if err != nil || n != 1 {
+			fmt.Println("Please enter a single number matching the selected provider")
+			fmt.Scanln()
+		}
+
+		switch choice {
+		case 1, 2, 4:
+			cfg.Provider = providers.ProviderOpenai
+		case 3:
+			cfg.Provider = providers.ProviderGemini
+		}
+		break
+	}
+
+	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(cfgDir + "/hello-llm.cfg", os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return ErrConfigCreation
+	}
+
+	if _, err := f.WriteString("default_provider=" + providers.ProviderTypeToString(cfg.Provider)); err != nil {
+		return ErrConfigCreation
+	}
+
+	return nil
+}
+
 func main() {
+	cfg := app.AppConfig{}
+
+	flagset := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	flagset.BoolVar(&cfg.AllowWebSearch, "w", false, "Allows the LLM to perform web searches. This may increase token usage and response time. The web search is performed on the provider's server unless using local models.")
+	flagset.BoolVar(&cfg.AllowWebSearch, "web", false, "Allows the LLM to perform web searches. This may increase token usage and response time. The web search is performed on the provider's server unless using local models.")
+	flagset.Parse(os.Args[1:])
+	
+	if err := ReadConfig(&cfg); err != nil {
+		if os.IsNotExist(err) {
+			err = InitConfig(&cfg)
+		} else if errors.Is(err, ErrConfigCorrupted) {
+			fmt.Fprintf(os.Stderr, "Failed to interpret config file. Has it been modified by a third party ?\n") 
+			err = InitConfig(&cfg)
+		}
+
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not create a config file... Aborting\n") 
+			return
+		}
+	}
+
+	// cfg can now be populated with cmd line args and other stuff
+
 	stdinStat, _ := os.Stdin.Stat()
 	pipedInput := ""
 	if stdinStat.Mode() & os.ModeCharDevice == 0 {
@@ -531,53 +389,41 @@ func main() {
 	defer screen.Fini();
 
 	// This is where windows users will lack
-	namedPipe := NamedPipeFile{}
 	runtimeDir := xdg.RuntimeDir
 	if runtimeDir != "" {
 		fifoPath := runtimeDir + "/hello-llm"
-		namedPipe.Path = fifoPath
+		cfg.NamedPipe.Path = fifoPath
 
 		stats, err := os.Lstat(fifoPath)
 		if err != nil {
 			switch {
 			case errors.Is(err, os.ErrNotExist):
 				if err := syscall.Mkfifo(fifoPath, 0666); err != nil {
-					namedPipe.Failure = NamedPipeFailureOther
+					cfg.NamedPipe.Failure = app.NamedPipeFailureOther
 				} else {
 					// I KNOW ITS MORE RESPECTFUL TO THE USER'S FS TO DO THAT BUT IT SLOWS DOWN SUBSEQUENT STARTUPS
 					// defer os.Remove(fifoPath)
 				}
 			case errors.Is(err, os.ErrPermission):
-				namedPipe.Failure = NamedPipeFailureNotAllowed
+				cfg.NamedPipe.Failure = app.NamedPipeFailureNotAllowed
 			default:
-				namedPipe.Failure = NamedPipeFailureOther
+				cfg.NamedPipe.Failure = app.NamedPipeFailureOther
 			}
 		} else if (stats.Mode() & os.ModeNamedPipe) != os.ModeNamedPipe {
 			// This branch is useful for debugging failure, just create a dir at XDG_RUNTIME_DIR called hello-llm
-			namedPipe.Failure = NamedPipeFailureAlreadyExists
+			cfg.NamedPipe.Failure = app.NamedPipeFailureAlreadyExists
 		} else if (stats.Mode() & os.ModeNamedPipe) == os.ModeNamedPipe {
 			// Should we do anything here ?
 			// Its unlikely that the user already has a FIFO file with the app's name being used for other purposes
 			// It probably comes from a previous session
 		}
 	} else {
-		namedPipe.Failure = NamedPipeFailureNoSuitablePath
+		cfg.NamedPipe.Failure = app.NamedPipeFailureNoSuitablePath
 	}
 
-	app := NewAppState(providers.ProviderGemini, namedPipe)
+	app := app.NewAppState(&cfg)
 	if pipedInput != "" {
 		app.ContextAppend(pipedInput)
-	}
-
-	cacheDir, err := os.UserCacheDir();
-	if err != nil {
-		log.Fatal("Failed to retrieve user cache dir", err);
-	}
-	cacheFilePath := cacheDir + "/hello-llm/cache.json";
-
-	if _, err := os.Stat(cacheFilePath);
-	errors.Is(err, os.ErrNotExist) {
-		WarmupCache(cacheFilePath);
 	}
 
 	tuiQuit := make(chan struct{})
@@ -590,6 +436,6 @@ func main() {
 	go ReceiveTuiEvent(tuiEventsCh, appEv)
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
-	RunEventLoop(ctx, app, screen, appEv)
+	RunEventLoop(ctx, app, flagset.Args(), screen, appEv)
 	defer cancelCtx()
 }

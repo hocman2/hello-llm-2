@@ -16,18 +16,10 @@ type View struct {
 	Yoffset int
 	Mode ViewMode
 
-	computed bool
 	atBottom bool
 }
 
-// Computes some internal values for drawing correctly 
-// The reason why it's a two step process is that you might want
-// to check for new yOffset or if view is at bottom after computing
-// Doing it that way is more explicit.
-// Technically if you don't call Compute() it will be done before drawing anyway ...
-func (view *View) Compute(screen tcell.Screen) {
-	view.computed = true
-
+func (view *View) Draw(screen tcell.Screen) {
 	contentHeight := view.Element.ComputeHeight(screen)
 	_, screenHeight := screen.Size()
 	if view.Mode == ViewModeAutoCompute {
@@ -40,12 +32,6 @@ func (view *View) Compute(screen tcell.Screen) {
 
 	if view.Yoffset >= contentHeight - screenHeight {
 		view.atBottom = true
-	}
-}
-
-func (view *View) Draw(screen tcell.Screen) {
-	if !view.computed {
-		view.Compute(screen)
 	}
 
 	view.Element.Draw(screen, view.Yoffset)

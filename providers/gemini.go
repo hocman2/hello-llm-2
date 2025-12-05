@@ -63,6 +63,14 @@ func (_ GeminiProvider) StartStreamingRequest(ctx context.Context, params Stream
 		}
 	}
 
+	tools := []map[string]any{}
+
+	if params.AllowWebSearch {
+		tools = append(tools, map[string]any{
+			"google_search": map[string]any{},
+			})
+	}
+
 	// i hate google
 	bodyStruct := map[string]any {
 		"system_instruction": systemInstruction {
@@ -70,6 +78,7 @@ func (_ GeminiProvider) StartStreamingRequest(ctx context.Context, params Stream
 		},
 		"contents": messages,
 		"generationConfig": generationConfig{ThinkingConfig:thinkingConfig{ThinkingBudget: 0}},
+		"tools": tools,
 	}
 	body, err := json.Marshal(bodyStruct)
 	if err != nil {

@@ -18,6 +18,36 @@ const (
 	ProviderGrok
 )
 
+func ProviderTypeToString(provider ProviderType) string {
+	switch provider {
+	case ProviderOpenai:
+		return "openai"
+	case ProviderAnthropic:
+		return "anthropic"
+	case ProviderGemini:
+		return "google"
+	case ProviderGrok:
+		return "elonmusk"
+	default:
+		return "fuck you"
+	}
+}
+
+func ProviderTypeFromString(t string) (ProviderType, error) {
+	switch t {
+	case "openai":
+		return ProviderOpenai, nil
+	case "anthropic":
+		return ProviderAnthropic, nil
+	case "google":
+		return ProviderGemini, nil
+	case "elonmusk":
+		return ProviderGrok, nil
+	default:
+		return 0, errors.New("Unknown provider")
+	}
+}
+
 var (
 	ErrStatusNotOK error = errors.New("GET request was not 200 OK")
 	ErrContentTypeNotEventStream error = errors.New("The response MIME type should be text/event-stream for streaming requests")
@@ -41,6 +71,7 @@ type AgnosticConversationMessage struct {
 
 type StreamingRequestParams struct {
 	Messages []AgnosticConversationMessage
+	AllowWebSearch bool
 	OnChunkReceived func(chunk string)
 	OnStreamingEnd func(content string)
 	OnStreamingErr func(err error)
