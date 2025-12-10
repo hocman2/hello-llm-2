@@ -25,6 +25,7 @@ type NamedPipeFile struct {
 type AppConfig struct {
 	Provider providers.ProviderType
 	AllowWebSearch bool
+	UseStdout bool
 	SystemPrompt string
 	NamedPipe NamedPipeFile
 }

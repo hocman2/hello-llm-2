@@ -14,9 +14,14 @@ import (
 type OpenaiProvider struct {}
 
 func (_ OpenaiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
-	model := "gpt-4o-mini"
-	url := fmt.Sprintf("https://api.openai.com/v1/chat/completions")
+var	model string
+	if params.AllowWebSearch {
+		model = "gpt-4o-mini-search-preview"
+	} else {
+		model = "gpt-4o-mini"
+	}
 
+	url := fmt.Sprintf("https://api.openai.com/v1/chat/completions")
 
 	type ApiMessage struct {
 		Content string `json:"content"`
@@ -43,6 +48,10 @@ func (_ OpenaiProvider) StartStreamingRequest(ctx context.Context, params Stream
 		"model": model,
 		"messages": messages,
 		"stream": true,
+	}
+
+	if params.AllowWebSearch {
+		bodyStruct["web_search_options"] = map[string]any{}
 	}
 
 	body, err := json.Marshal(bodyStruct)

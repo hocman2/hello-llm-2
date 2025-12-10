@@ -19,7 +19,7 @@ import (
 	"github.com/hello-llm-2/providers"
 	"github.com/hello-llm-2/ui"
 )
-const SystemPrompt string = "You are a helpful assistant prompted from a terminal shell. User expects straight to the point factual answers with minimal noise unless specified otherwise."
+const SystemPrompt string = "You are a helpful assistant prompted from a terminal shell. User expects straight to the point factual answers with minimal noise unless specified otherwise. Deliver response in plain text"
 
 // Returns the new YOffset (if computed, else unchanged) and if the view is at the bottom or not
 func DrawScreen(app *app.AppState, screen tcell.Screen) (int, bool) {
@@ -66,8 +66,8 @@ func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversation
 		OnChunkReceived: func(chunk string) {
 			evTx <- AppEvent {Type: EvLlmContentArrived, Data: chunk}
 		},
-		OnStreamingEnd: func(_content string) {
-			evTx <- AppEvent {Type: EvLlmContentFinished}
+		OnStreamingEnd: func(content string) {
+			evTx <- AppEvent {Type: EvLlmContentFinished, Data: content}
 		},
 		OnStreamingErr: func(err error) {
 			evTx <- AppEvent {Type: EvAppShowUserErr, Error: err}
@@ -264,6 +264,42 @@ func RunEventLoop(ctx context.Context, app *app.AppState, args []string, screen 
 	}
 }
 
+func RunOneShot(ctx context.Context, app *app.AppState, args []string) {
+	if len(args) == 0 {
+		return
+	}
+
+	appEvCh := make(chan AppEvent, 5)
+	var evRx <-chan AppEvent = appEvCh
+	var evTx chan<- AppEvent = appEvCh
+
+	prompt := strings.Builder{}
+	prompt.WriteString("Hello, ")
+	prompt.WriteString(strings.Join(args, " "))
+	app.UserPromptSet(prompt.String())
+	app.ChatHistoryAppendUserPrompt()
+	rCtx, _ := context.WithCancel(ctx)
+	UserPromptSubmit(
+		rCtx,
+		app.ChatHistory(),
+		app.Provider(),
+		app.Cfg().AllowWebSearch,
+		evTx,
+		)
+
+	for ev := range evRx {
+		switch ev.Type {
+		case EvLlmContentFinished:
+			fmt.Println(ev.Data)
+			return
+		case EvAppShowUserErr:
+			fmt.Fprintf(os.Stderr, ev.Error.Error())
+			return
+		default:
+		}
+	}
+}
+
 var (
 	ErrConfigCorrupted error = errors.New("Config corrupted")
 	ErrConfigCreation error = errors.New("An unknown error occured while writing to config file")
@@ -353,6 +389,8 @@ func main() {
 	flagset := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	flagset.BoolVar(&cfg.AllowWebSearch, "w", false, "Allows the LLM to perform web searches. This may increase token usage and response time. The web search is performed on the provider's server unless using local models.")
 	flagset.BoolVar(&cfg.AllowWebSearch, "web", false, "Allows the LLM to perform web searches. This may increase token usage and response time. The web search is performed on the provider's server unless using local models.")
+	flagset.BoolVar(&cfg.UseStdout, "s", false, "Wait for the response to be fully generated and prints it to stdout instead of opening an interactive session")
+	flagset.BoolVar(&cfg.UseStdout, "stdout", false, "Wait for the response to be fully generated and prints it to stdout instead of opening an interactive session")
 	flagset.Parse(os.Args[1:])
 	
 	if err := ReadConfig(&cfg); err != nil {
@@ -381,61 +419,65 @@ func main() {
 		pipedInput = string(data)
 	}
 
-	screen, err := tcell.NewScreen();
-	err = screen.Init();
-	if err != nil {
-		log.Fatal("Failed to create a screen: ", err);
-	}
-	defer screen.Fini();
-
-	// This is where windows users will lack
-	runtimeDir := xdg.RuntimeDir
-	if runtimeDir != "" {
-		fifoPath := runtimeDir + "/hello-llm"
-		cfg.NamedPipe.Path = fifoPath
-
-		stats, err := os.Lstat(fifoPath)
-		if err != nil {
-			switch {
-			case errors.Is(err, os.ErrNotExist):
-				if err := syscall.Mkfifo(fifoPath, 0666); err != nil {
-					cfg.NamedPipe.Failure = app.NamedPipeFailureOther
-				} else {
-					// I KNOW ITS MORE RESPECTFUL TO THE USER'S FS TO DO THAT BUT IT SLOWS DOWN SUBSEQUENT STARTUPS
-					// defer os.Remove(fifoPath)
-				}
-			case errors.Is(err, os.ErrPermission):
-				cfg.NamedPipe.Failure = app.NamedPipeFailureNotAllowed
-			default:
-				cfg.NamedPipe.Failure = app.NamedPipeFailureOther
-			}
-		} else if (stats.Mode() & os.ModeNamedPipe) != os.ModeNamedPipe {
-			// This branch is useful for debugging failure, just create a dir at XDG_RUNTIME_DIR called hello-llm
-			cfg.NamedPipe.Failure = app.NamedPipeFailureAlreadyExists
-		} else if (stats.Mode() & os.ModeNamedPipe) == os.ModeNamedPipe {
-			// Should we do anything here ?
-			// Its unlikely that the user already has a FIFO file with the app's name being used for other purposes
-			// It probably comes from a previous session
-		}
-	} else {
-		cfg.NamedPipe.Failure = app.NamedPipeFailureNoSuitablePath
-	}
-
-	app := app.NewAppState(&cfg)
-	if pipedInput != "" {
-		app.ContextAppend(pipedInput)
-	}
-
-	tuiQuit := make(chan struct{})
-	tuiEventsCh := make(chan tcell.Event)
-	appEv := make(chan AppEvent, 50)
-
-	go screen.ChannelEvents(tuiEventsCh, tuiQuit)
-	defer close(tuiQuit)
-
-	go ReceiveTuiEvent(tuiEventsCh, appEv)
-
+	appState := app.NewAppState(&cfg)
 	ctx, cancelCtx := context.WithCancel(context.Background())
-	RunEventLoop(ctx, app, flagset.Args(), screen, appEv)
 	defer cancelCtx()
+	if cfg.UseStdout {
+		RunOneShot(ctx, appState, flagset.Args())
+	} else {
+		screen, err := tcell.NewScreen();
+		err = screen.Init();
+		if err != nil {
+			log.Fatal("Failed to create a screen: ", err);
+		}
+		defer screen.Fini();
+
+		// This is where windows users will lack
+		runtimeDir := xdg.RuntimeDir
+		if runtimeDir != "" {
+			fifoPath := runtimeDir + "/hello-llm"
+			cfg.NamedPipe.Path = fifoPath
+
+			stats, err := os.Lstat(fifoPath)
+			if err != nil {
+				switch {
+				case errors.Is(err, os.ErrNotExist):
+					if err := syscall.Mkfifo(fifoPath, 0666); err != nil {
+						cfg.NamedPipe.Failure = app.NamedPipeFailureOther
+					} else {
+						// I KNOW ITS MORE RESPECTFUL TO THE USER'S FS TO DO THAT BUT IT SLOWS DOWN SUBSEQUENT STARTUPS
+						// defer os.Remove(fifoPath)
+					}
+				case errors.Is(err, os.ErrPermission):
+					cfg.NamedPipe.Failure = app.NamedPipeFailureNotAllowed
+				default:
+					cfg.NamedPipe.Failure = app.NamedPipeFailureOther
+				}
+			} else if (stats.Mode() & os.ModeNamedPipe) != os.ModeNamedPipe {
+				// This branch is useful for debugging failure, just create a dir at XDG_RUNTIME_DIR called hello-llm
+				cfg.NamedPipe.Failure = app.NamedPipeFailureAlreadyExists
+			} else if (stats.Mode() & os.ModeNamedPipe) == os.ModeNamedPipe {
+				// Should we do anything here ?
+				// Its unlikely that the user already has a FIFO file with the app's name being used for other purposes
+				// It probably comes from a previous session
+			}
+		} else {
+			cfg.NamedPipe.Failure = app.NamedPipeFailureNoSuitablePath
+		}
+
+		if pipedInput != "" {
+			appState.ContextAppend(pipedInput)
+		}
+
+		tuiQuit := make(chan struct{})
+		tuiEventsCh := make(chan tcell.Event)
+		appEv := make(chan AppEvent, 50)
+
+		go screen.ChannelEvents(tuiEventsCh, tuiQuit)
+		defer close(tuiQuit)
+
+		go ReceiveTuiEvent(tuiEventsCh, appEv)
+
+		RunEventLoop(ctx, appState, flagset.Args(), screen, appEv)
+	}
 }
