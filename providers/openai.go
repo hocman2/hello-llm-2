@@ -11,17 +11,38 @@ import (
 	"encoding/json"
 )
 
-type OpenaiProvider struct {}
+var OpenaiProviderOpenai OpenaiProvider = OpenaiProvider {
+	Endpoint: "https://api.openai.com/v1/chat/completions",
+	Model: "gpt-4o-mini",
+	ApiKey: os.Getenv("OPENAI_API_KEY"),
+	ModelWebSearch: "gpt-4o-mini-search-preview",
+	WebSearchField: map[string]any {
+		"web-search-options": map[string]any{},
+	},
+	UseDeveloperRole: true,
+}
 
-func (_ OpenaiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
+type OpenaiProvider struct {
+	Endpoint string
+	Model string
+	ApiKey string
+	// As of 11-12-2025, openai uses a different gpt4o model for web search with chat completions api
+	ModelWebSearch string
+	// Varies from provider to provider
+	WebSearchField map[string]any
+	// Openai uses "role":"developer" while some providers use "role":"system"
+	UseDeveloperRole bool
+}
+
+func (p *OpenaiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
 var	model string
 	if params.AllowWebSearch {
-		model = "gpt-4o-mini-search-preview"
+		model = p.ModelWebSearch
 	} else {
-		model = "gpt-4o-mini"
+		model = p.Model
 	}
 
-	url := fmt.Sprintf("https://api.openai.com/v1/chat/completions")
+	url := fmt.Sprintf(p.Endpoint)
 
 	type ApiMessage struct {
 		Content string `json:"content"`
@@ -32,7 +53,11 @@ var	model string
 		var role string
 		switch msg.Type {
 		case MessageTypeSystem:
-			role = "developer"
+			if p.UseDeveloperRole {
+				role = "developer"
+			} else {
+				role = "system"
+			}
 		case MessageTypeAssistant:
 			role = "assistant"
 		case MessageTypeUser, MessageTypeUserContext:
@@ -51,7 +76,9 @@ var	model string
 	}
 
 	if params.AllowWebSearch {
-		bodyStruct["web_search_options"] = map[string]any{}
+		for k, v := range p.WebSearchField {
+			bodyStruct[k] = v
+		}
 	}
 
 	body, err := json.Marshal(bodyStruct)
@@ -62,7 +89,7 @@ var	model string
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Authorization", "Bearer " + os.Getenv("OPENAI_API_KEY"))
+	req.Header.Set("Authorization", "Bearer " + p.ApiKey)
 
 	reader, err := startSseRequest(req)
 	if err != nil && params.OnStreamingErr != nil {

@@ -340,7 +340,7 @@ func InitConfig(cfg *app.AppConfig) error {
 	fmt.Println("\t1. OpenAI (Uses OPENAI_API_KEY environment variable)")
 	fmt.Println("\t2. Anthropic (Uses X environment variable)")
 	fmt.Println("\t3. Google (Uses GEMINI_API_KEY environment variable)")
-	fmt.Println("\t4. xAI (Uses GROK_API_KEY environment variable)")
+	fmt.Println("\t4. xAI (Uses XAI_API_KEY environment variable)")
 
 	for {
 		var choice int
@@ -352,10 +352,12 @@ func InitConfig(cfg *app.AppConfig) error {
 		}
 
 		switch choice {
-		case 1, 2, 4:
+		case 1, 2:
 			cfg.Provider = providers.ProviderOpenai
 		case 3:
 			cfg.Provider = providers.ProviderGemini
+		case 4:
+			cfg.Provider = providers.ProviderGrok
 		}
 		break
 	}
