@@ -3,7 +3,6 @@ package app
 import (
 	"log"
 	"fmt"
-	"strings"
 	"github.com/hello-llm-2/providers"
 )
 
@@ -26,6 +25,7 @@ type AppConfig struct {
 	Provider providers.ProviderType
 	AllowWebSearch bool
 	UseStdout bool
+	UseColor bool
 	SystemPrompt string
 	NamedPipe NamedPipeFile
 }
@@ -130,6 +130,10 @@ func (a *AppState) LlmResponsePush(chunk string) {
 	a.currentLlmResponse += chunk
 }
 
+func (a *AppState) LlmResponse() string {
+	return a.currentLlmResponse
+}
+
 func (a *AppState) LlmResponseFinalize() {
 	if a.currentLlmResponse == "" {
 		return
@@ -178,27 +182,6 @@ func (a *AppState) UserPromptEmpty() bool {
 // Returns the whole chat history appended with the current user prompt
 func (a *AppState) ChatHistory() []providers.AgnosticConversationMessage {
 	return a.chatHistory
-}
-
-// Builds the chat history as a single string, each message separated by newline. Also contains the current LLM response
-func (a *AppState) ChatHistoryBuild() string {
-	builder := strings.Builder{}
-	for _, msg := range a.chatHistory {
-		switch msg.Type {
-		case providers.MessageTypeSystem:
-			continue
-		case providers.MessageTypeUserContext:
-			continue
-		case providers.MessageTypeUser:
-			builder.WriteString("> ")
-		}
-
-		builder.WriteString(msg.Content)
-		builder.WriteRune('\n')
-	}
-	builder.WriteString(a.currentLlmResponse)
-
-	return builder.String()
 }
 
 func (a *AppState) Provider() providers.Provider {

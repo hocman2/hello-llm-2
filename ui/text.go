@@ -13,12 +13,13 @@ type Text struct {
 	buffer string
 	params TextParams
 	lines []string
-	linesCached bool
+	linesBuilt bool
 }
 
 type TextParams struct {
 	HeightMode int
 	Color tcell.Color
+	ColorForeground tcell.Color
 }
 
 func NewText(content string, params TextParams) *Text {
@@ -26,11 +27,11 @@ func NewText(content string, params TextParams) *Text {
 		buffer: content,
 		params: params,
 		lines: make([]string, 0, 2),
-		linesCached: false,
+		linesBuilt: false,
 	}
 }
 
-func (text *Text) ComputeHeight(screen tcell.Screen) int {
+func (text *Text) BuildLines(screen tcell.Screen) {
 	screenWidth, _ := screen.Size()
 	var lines []string
 	var currentLine strings.Builder
@@ -61,25 +62,37 @@ func (text *Text) ComputeHeight(screen tcell.Screen) int {
 		lines = append(lines, currentLine.String())
 	}
 
-	// Cached for drawing later
 	text.lines = lines
-	text.linesCached = true
+	text.linesBuilt = true
+}
 
-	return len(lines)
+func (text *Text) ComputeHeight(screen tcell.Screen, availableVoidSpace int) int {
+	if !text.linesBuilt {
+		text.BuildLines(screen)
+	}
+	switch text.params.HeightMode {
+	case HeightFit:
+		return len(text.lines)
+	case HeightFillOrFit:
+		return max(len(text.lines), availableVoidSpace)
+	default:
+		return len(text.lines)
+	}
 }
 
 func (text *Text) HeightMode() int {
 	return text.params.HeightMode
 }
 
-func (text *Text) Draw(screen tcell.Screen, y int) (int, int) {
+func (text *Text) Draw(screen tcell.Screen, y int) {
 	screenW, _ := screen.Size()
 
-	if !text.linesCached {
-		text.ComputeHeight(screen)
+	if !text.linesBuilt {
+		text.BuildLines(screen)
 	}
 
 	style := tcell.StyleDefault.Background(text.params.Color) 
+	style = style.Foreground(text.params.ColorForeground)
 	lines := text.lines
 	for i, line := range lines {
 		lineY := y + i
@@ -92,6 +105,4 @@ func (text *Text) Draw(screen tcell.Screen, y int) (int, int) {
 		}
 		screen.PutStrStyled(0, lineY, line, style)
 	}
-
-	return 0, 0
 }

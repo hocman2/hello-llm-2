@@ -20,10 +20,10 @@ type View struct {
 }
 
 func (view *View) Draw(screen tcell.Screen) {
-	contentHeight := view.Element.ComputeHeight(screen)
 	_, screenHeight := screen.Size()
+	contentHeight := view.Element.ComputeHeight(screen, screenHeight)
 	if view.Mode == ViewModeAutoCompute {
-		if contentHeight < screenHeight {
+		if contentHeight <= screenHeight {
 			view.Yoffset = 0
 		} else {
 			view.Yoffset = contentHeight - screenHeight
@@ -34,7 +34,7 @@ func (view *View) Draw(screen tcell.Screen) {
 		view.atBottom = true
 	}
 
-	view.Element.Draw(screen, view.Yoffset)
+	view.Element.Draw(screen, -view.Yoffset)
 }
 
 func (view *View) AtBottom() bool {
@@ -42,6 +42,6 @@ func (view *View) AtBottom() bool {
 }
 
 type ViewElement interface {
-	ComputeHeight(screen tcell.Screen) int
-	Draw(screen tcell.Screen, yOffset int)
+	ComputeHeight(screen tcell.Screen, availableVoidSpace int) int
+	Draw(screen tcell.Screen, y int)
 }

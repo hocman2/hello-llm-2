@@ -1,9 +1,52 @@
 package ui
 
 import (
+	"strings"
 	"fmt"
 	"github.com/gdamore/tcell/v2"
+	"github.com/hello-llm-2/providers"
 )
+
+func BuildChatHistory(messages []providers.AgnosticConversationMessage, currentResponse string, useColor bool) *VerticalStack {
+	// Overallocating here
+	elements := make([]StackElement, 0, len(messages) + 1)
+
+	builder := strings.Builder{}
+	for _, msg := range messages {
+		params := TextParams{}
+
+		switch msg.Type {
+		case providers.MessageTypeUser:
+			if useColor {
+				params.ColorForeground = tcell.ColorDarkCyan
+			}
+			builder.WriteString("> ")
+		case providers.MessageTypeUserContext, providers.MessageTypeSystem:
+			continue
+		}
+
+		builder.WriteString(msg.Content)
+		builder.WriteByte('\n')
+
+		elements = append(
+			elements,
+			NewText(builder.String(), params),
+			)
+		builder.Reset()
+	}
+
+	if currentResponse != "" {
+		elements = append(
+			elements,
+			NewText(currentResponse, TextParams{}),
+			)
+	}
+
+	return NewVerticalStack(
+		elements,
+		VerticalStackParams {HeightFillOrFit},
+		)
+}
 
 func BuildFifoFileUiElement(pipedContent string, pipePath string, pipeFailure bool) *Text {
 	if pipeFailure {
@@ -37,4 +80,3 @@ func BuildUserErrorUiElement(userError string) *Text {
 		return nil
 	}
 }
-

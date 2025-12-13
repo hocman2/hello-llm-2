@@ -26,11 +26,7 @@ func DrawScreen(app *app.AppState, screen tcell.Screen) (int, bool) {
 	screen.Clear()
 
 	elements := []ui.StackElement{
-		ui.NewText(
-			app.ChatHistoryBuild(),
-			ui.TextParams{
-				HeightMode: ui.HeightFillOrFit,
-			}),
+		ui.BuildChatHistory(app.ChatHistory(), app.LlmResponse(), app.Cfg().UseColor),
 		ui.BuildUserErrorUiElement(app.UserError),
 		ui.BuildFifoFileUiElement(
 			app.PipedContent(),
@@ -44,7 +40,7 @@ func DrawScreen(app *app.AppState, screen tcell.Screen) (int, bool) {
 	}
 
 	view := ui.View {
-		Element: ui.NewVerticalStack(elements),
+		Element: ui.NewVerticalStack(elements, ui.VerticalStackParams{}),
 	}
 
 	if app.FreeScrollMode {
@@ -406,6 +402,8 @@ func main() {
 	flagset.BoolVar(&cfg.AllowWebSearch, "web", false, "Allows the LLM to perform web searches. This may increase token usage and response time. The web search is performed on the provider's server unless using local models.")
 	flagset.BoolVar(&cfg.UseStdout, "s", false, "Wait for the response to be fully generated and prints it to stdout instead of opening an interactive session")
 	flagset.BoolVar(&cfg.UseStdout, "stdout", false, "Wait for the response to be fully generated and prints it to stdout instead of opening an interactive session")
+	flagset.BoolVar(&cfg.UseColor, "c", false, "Enable colored output in interactive mode.")
+	flagset.BoolVar(&cfg.UseColor, "colored-output", false, "Enable colored output in interactive mode.")
 	flagset.Parse(os.Args[1:])
 	
 	if err := ReadConfig(&cfg); err != nil {
