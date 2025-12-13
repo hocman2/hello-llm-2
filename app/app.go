@@ -34,6 +34,7 @@ type AppState struct {
 	FreeScrollMode bool
 	ScrollPosition int
 	UserError string
+	ViewAtBottom bool
 
 	cfg *AppConfig
 	userPromptBuf []rune
@@ -71,6 +72,7 @@ func NewAppState(cfg *AppConfig) *AppState {
 		FreeScrollMode: false,
 		ScrollPosition: 0,
 		UserError: "",
+		ViewAtBottom: true,
 		cfg: cfg,
 		userPromptBuf: userPromptBuf,
 		chatHistory: chatHistory,

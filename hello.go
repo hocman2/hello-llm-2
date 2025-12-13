@@ -97,6 +97,14 @@ func ReceiveTuiEvent(tuiEv <-chan tcell.Event, appEvTx chan<- AppEvent) {
 			}
 		case *tcell.EventResize:
 			appEvTx <- AppEvent{Type: EvTermResize}
+		case *tcell.EventMouse:
+			buttons := ev.(*tcell.EventMouse).Buttons()
+			if buttons&tcell.WheelUp == 0 {
+				appEvTx <- AppEvent{Type: EvViewScrollDown}
+			}
+			if buttons&tcell.WheelDown == 0 {
+				appEvTx <- AppEvent{Type: EvViewScrollUp}
+			}
 		}
 	}
 }
@@ -227,11 +235,15 @@ func RunEventLoop(ctx context.Context, app *app.AppState, args []string, screen 
 		case EvTermResize:
 			// redraw -- Done below
 		case EvViewScrollUp:
-			app.FreeScrollMode = true
-			app.ScrollPosition -= 1
+			if app.ScrollPosition > 0 {
+				app.FreeScrollMode = true
+				app.ScrollPosition -= 1
+			}
 		case EvViewScrollDown:
-			app.FreeScrollMode = true
-			app.ScrollPosition += 1
+			if !app.ViewAtBottom {
+				app.FreeScrollMode = true
+				app.ScrollPosition += 1
+			}
 		case EvUserPromptInput:
 			app.UserPromptAppendRune(ev.Rune)
 		case EvUserPromptPop:
@@ -261,6 +273,7 @@ func RunEventLoop(ctx context.Context, app *app.AppState, args []string, screen 
 			app.FreeScrollMode = false
 		} 
 		app.ScrollPosition = newYOffset
+		app.ViewAtBottom = atBottom
 	}
 }
 
@@ -429,6 +442,7 @@ func main() {
 	} else {
 		screen, err := tcell.NewScreen();
 		err = screen.Init();
+		screen.EnableMouse(tcell.MouseButtonEvents)
 		if err != nil {
 			log.Fatal("Failed to create a screen: ", err);
 		}
