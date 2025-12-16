@@ -17,7 +17,7 @@ var OpenaiProviderOpenai OpenaiProvider = OpenaiProvider {
 	ApiKey: os.Getenv("OPENAI_API_KEY"),
 	ModelWebSearch: "gpt-4o-mini-search-preview",
 	WebSearchField: map[string]any {
-		"web-search-options": map[string]any{},
+		"web_search_options": map[string]any{},
 	},
 	UseDeveloperRole: true,
 }
