@@ -100,7 +100,9 @@ func (_ GeminiProvider) StartStreamingRequest(ctx context.Context, params Stream
 
 	wholeContent := strings.Builder{} 
 	for {
-		eventData, err := reader.Next()
+		eventRes, err := reader.Next()
+		eventData := eventRes.eventData
+
 		if err != nil {
 			if err == io.EOF && params.OnStreamingEnd != nil{
 				params.OnStreamingEnd(wholeContent.String())

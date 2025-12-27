@@ -35,7 +35,7 @@ type OpenaiProvider struct {
 }
 
 func (p *OpenaiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
-var	model string
+	var	model string
 	if params.AllowWebSearch {
 		model = p.ModelWebSearch
 	} else {
@@ -100,7 +100,7 @@ var	model string
 
 	wholeContent := strings.Builder{}
 	for {
-		eventData, err := reader.Next()
+		eventRes, err := reader.Next()
 		if err != nil {
 			if err == io.EOF && params.OnStreamingEnd != nil {
 				params.OnStreamingEnd(wholeContent.String())
@@ -113,6 +113,7 @@ var	model string
 			return
 		}
 
+		eventData := eventRes.eventData
 		if len(eventData) > 0 {
 			if eventData == "[DONE]" {
 				params.OnStreamingEnd(wholeContent.String())

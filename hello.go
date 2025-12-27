@@ -347,7 +347,7 @@ func InitConfig(cfg *app.AppConfig) error {
 	fmt.Println("You are seeing this screen because we need to build the default config for 'hello-llm'")
 	fmt.Println("Please select your preferred default LLM provider:")
 	fmt.Println("\t1. OpenAI (Uses OPENAI_API_KEY environment variable)")
-	fmt.Println("\t2. Anthropic (Uses X environment variable)")
+	fmt.Println("\t2. Anthropic (Uses ANTHROPIC_API_KEY environment variable)")
 	fmt.Println("\t3. Google (Uses GEMINI_API_KEY environment variable)")
 	fmt.Println("\t4. xAI (Uses XAI_API_KEY environment variable)")
 
@@ -361,8 +361,10 @@ func InitConfig(cfg *app.AppConfig) error {
 		}
 
 		switch choice {
-		case 1, 2:
+		case 1:
 			cfg.Provider = providers.ProviderOpenai
+		case 2:
+			cfg.Provider = providers.ProviderAnthropic
 		case 3:
 			cfg.Provider = providers.ProviderGemini
 		case 4:

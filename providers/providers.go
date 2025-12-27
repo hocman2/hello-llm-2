@@ -111,18 +111,26 @@ func (reader *sseReader) Close() {
 	reader.resp.Body.Close()
 }
 
+type sseReadResult struct {
+	eventName string
+	eventData string
+}
+
 // Read until an event data is formed and return it
-func (reader *sseReader) Next() (string, error) {
+func (reader *sseReader) Next() (sseReadResult, error) {
+	res := sseReadResult{}
 	eventData := strings.Builder{}
+
 	for {
 		line, err := reader.reader.ReadString('\n')
 		if err != nil {
-			return "", err
+			return res, err
 		}
 
 		if strings.TrimSpace(line) == "" {
 			if eventData.Len() > 0 {
-				return eventData.String(), nil
+				res.eventData = eventData.String()
+				return res, nil
 			}
 		}
 
@@ -134,6 +142,8 @@ func (reader *sseReader) Next() (string, error) {
 			field := line[:idx]
 			value := line[idx+1:]
 			switch field {
+			case "event":
+				res.eventName = strings.TrimSpace(value)
 			case "data":
 				eventData.WriteString(strings.TrimSpace(value))
 			default:

@@ -64,6 +64,8 @@ func NewAppState(cfg *AppConfig) *AppState {
 		provider = providers.GeminiProvider{}
 	case providers.ProviderGrok:
 		provider = &providers.OpenaiProviderGrok
+	case providers.ProviderAnthropic:
+		provider = providers.AnthropicProvider{}
 	default:
 		log.Fatal(cfg.Provider, "Unimplemented provider")
 	}
