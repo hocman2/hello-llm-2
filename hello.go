@@ -5,7 +5,6 @@ import (
 	"os"
 	"fmt"
 	"log"
-	"flag"
 	"bufio"
 	"errors"
 	"context"
@@ -18,6 +17,7 @@ import (
 	"github.com/hello-llm-2/app"
 	"github.com/hello-llm-2/providers"
 	"github.com/hello-llm-2/ui"
+	"github.com/hello-llm-2/argset"
 )
 const SystemPrompt string = "You are a helpful assistant prompted from a terminal shell. User expects straight to the point factual answers with minimal noise unless specified otherwise. Deliver response in plain text"
 
@@ -399,14 +399,15 @@ func InitConfig(cfg *app.AppConfig) error {
 func main() {
 	cfg := app.AppConfig{}
 
-	flagset := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-	flagset.BoolVar(&cfg.AllowWebSearch, "w", false, "Allows the LLM to perform web searches. This may increase token usage and response time. The web search is performed on the provider's server unless using local models.")
-	flagset.BoolVar(&cfg.AllowWebSearch, "web", false, "Allows the LLM to perform web searches. This may increase token usage and response time. The web search is performed on the provider's server unless using local models.")
-	flagset.BoolVar(&cfg.UseStdout, "s", false, "Wait for the response to be fully generated and prints it to stdout instead of opening an interactive session")
-	flagset.BoolVar(&cfg.UseStdout, "stdout", false, "Wait for the response to be fully generated and prints it to stdout instead of opening an interactive session")
-	flagset.BoolVar(&cfg.UseColor, "c", false, "Enable colored output in interactive mode.")
-	flagset.BoolVar(&cfg.UseColor, "colored-output", false, "Enable colored output in interactive mode.")
-	flagset.Parse(os.Args[1:])
+	args := argset.NewArgSet()
+	args.AddFlag(&cfg.AllowWebSearch, 'w', "web-search", false)
+	args.AddFlag(&cfg.UseStdout, 's', "stdout", false)
+	args.AddFlag(&cfg.UseColor, 'c', "colored-output", false)
+	err := args.Parse(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, err.Error())
+		os.Exit(1)
+	}
 	
 	if err := ReadConfig(&cfg); err != nil {
 		if os.IsNotExist(err) {
@@ -438,7 +439,7 @@ func main() {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 	if cfg.UseStdout {
-		RunOneShot(ctx, appState, flagset.Args())
+		RunOneShot(ctx, appState, args.Args())
 	} else {
 		screen, err := tcell.NewScreen();
 		err = screen.Init();
@@ -494,6 +495,6 @@ func main() {
 
 		go ReceiveTuiEvent(tuiEventsCh, appEv)
 
-		RunEventLoop(ctx, appState, flagset.Args(), screen, appEv)
+		RunEventLoop(ctx, appState, args.Args(), screen, appEv)
 	}
 }
