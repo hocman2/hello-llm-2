@@ -24,6 +24,7 @@ type argDef struct {
 type ArgSet struct {
 	args []argDef
 	ignoredArgs []string
+	description string
 }
 
 func NewArgSet() ArgSet {
@@ -32,6 +33,10 @@ func NewArgSet() ArgSet {
 
 func (a *ArgSet) Args() []string {
 	return a.ignoredArgs
+}
+
+func (a *ArgSet) Description(description string) {
+	a.description = description
 }
 
 func (a *ArgSet) AddFlag(retValue *bool, short rune, long string, defaultValue bool) {

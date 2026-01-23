@@ -23,6 +23,7 @@ type NamedPipeFile struct {
 
 type AppConfig struct {
 	Provider providers.ProviderType
+	ModelPreference providers.ModelPreference
 	AllowWebSearch bool
 	UseStdout bool
 	UseColor bool

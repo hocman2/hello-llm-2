@@ -48,6 +48,70 @@ func ProviderTypeFromString(t string) (ProviderType, error) {
 	}
 }
 
+type ModelPreference int
+const (
+	ModelPreferenceCheap ModelPreference = iota
+	ModelPreferenceFast
+	ModelPreferenceSmart
+	_ModelPreferenceLast
+)
+
+func ModelPreferenceToString(preference ModelPreference) string {
+	switch preference {
+	case ModelPreferenceCheap:
+		return "cheap"
+	case ModelPreferenceFast:
+		return "fast"
+	case ModelPreferenceSmart:
+		return "smart"
+	default:
+		return "fuck you"
+	}
+}
+
+func ModelPreferenceFromString(t string) (ModelPreference, error) {
+	switch t {
+	case "cheap":
+		return ModelPreferenceCheap, nil
+	case "fast":
+		return ModelPreferenceFast, nil
+	case "smart":
+		return ModelPreferenceSmart, nil
+	default:
+		return 0, errors.New("Unknown model preference")
+	}
+}
+
+type ModelSelector struct {
+	models [_ModelPreferenceLast]string
+	currentSelection ModelPreference
+}
+
+func NewModelSelector(cheap, fast, smart string) ModelSelector {
+	s := ModelSelector {}
+	s.models[ModelPreferenceCheap] = cheap
+	s.models[ModelPreferenceFast] = fast
+	s.models[ModelPreferenceSmart] = smart
+	return s
+}
+
+func (s *ModelSelector) SetCurrentSelection(pref ModelPreference) {
+	s.currentSelection = pref
+}
+
+func (s *ModelSelector) Get() string {
+	switch s.currentSelection {
+	case ModelPreferenceCheap:
+		return s.models[ModelPreferenceCheap]
+	case ModelPreferenceFast:
+		return s.models[ModelPreferenceFast]
+	case ModelPreferenceSmart:
+		return s.models[ModelPreferenceSmart]
+	default:
+		return s.models[ModelPreferenceCheap]
+	}
+}
+
 var (
 	ErrStatusNotOK error = errors.New("GET request was not 200 OK")
 	ErrContentTypeNotEventStream error = errors.New("The response MIME type should be text/event-stream for streaming requests")
@@ -71,6 +135,7 @@ type AgnosticConversationMessage struct {
 
 type StreamingRequestParams struct {
 	Messages []AgnosticConversationMessage
+	ModelPreference  ModelPreference
 	AllowWebSearch bool
 	OnChunkReceived func(chunk string)
 	OnStreamingEnd func(content string)

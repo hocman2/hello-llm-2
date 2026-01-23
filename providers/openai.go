@@ -13,9 +13,8 @@ import (
 
 var OpenaiProviderOpenai OpenaiProvider = OpenaiProvider {
 	Endpoint: "https://api.openai.com/v1/chat/completions",
-	Model: "gpt-4o-mini",
+	Models: NewModelSelector("gpt-5-nano", "gpt-5-nano", "gpt-5.2"),
 	ApiKey: os.Getenv("OPENAI_API_KEY"),
-	ModelWebSearch: "gpt-4o-mini-search-preview",
 	WebSearchField: map[string]any {
 		"web_search_options": map[string]any{},
 	},
@@ -24,10 +23,8 @@ var OpenaiProviderOpenai OpenaiProvider = OpenaiProvider {
 
 type OpenaiProvider struct {
 	Endpoint string
-	Model string
+	Models ModelSelector
 	ApiKey string
-	// As of 11-12-2025, openai uses a different gpt4o model for web search with chat completions api
-	ModelWebSearch string
 	// Varies from provider to provider
 	WebSearchField map[string]any
 	// Openai uses "role":"developer" while some providers use "role":"system"
@@ -35,12 +32,8 @@ type OpenaiProvider struct {
 }
 
 func (p *OpenaiProvider) StartStreamingRequest(ctx context.Context, params StreamingRequestParams) {
-	var	model string
-	if params.AllowWebSearch {
-		model = p.ModelWebSearch
-	} else {
-		model = p.Model
-	}
+	p.Models.SetCurrentSelection(params.ModelPreference)
+	model := p.Models.Get()
 
 	url := fmt.Sprintf(p.Endpoint)
 

@@ -55,10 +55,11 @@ func DrawScreen(app *app.AppState, screen tcell.Screen) (int, bool) {
 	return view.Yoffset, view.AtBottom()
 }
 
-func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversationMessage, provider providers.Provider, allowWebSearch bool, evTx chan<- AppEvent) {
+func UserPromptSubmit(ctx context.Context, msgs []providers.AgnosticConversationMessage, provider providers.Provider, cfg *app.AppConfig, evTx chan<- AppEvent) {
 	streamingParams := providers.StreamingRequestParams {
 		Messages: msgs,
-		AllowWebSearch: allowWebSearch,
+		ModelPreference: cfg.ModelPreference,
+		AllowWebSearch: cfg.AllowWebSearch,
 		OnChunkReceived: func(chunk string) {
 			evTx <- AppEvent {Type: EvLlmContentArrived, Data: chunk}
 		},
@@ -193,11 +194,12 @@ func RunEventLoop(ctx context.Context, app *app.AppState, args []string, screen 
 		app.ChatHistoryAppendUserPrompt()
 		var rCtx context.Context
 		rCtx, requestCancelFunc = context.WithCancel(ctx)
+		cfg := app.Cfg()
 		UserPromptSubmit(
 			rCtx,
 			app.ChatHistory(),
 			app.Provider(),
-			app.Cfg().AllowWebSearch,
+			&cfg,
 			evTx,
 			)
 		app.UserPromptClear()
@@ -288,11 +290,12 @@ func RunOneShot(ctx context.Context, app *app.AppState, args []string) {
 	app.UserPromptSet(prompt.String())
 	app.ChatHistoryAppendUserPrompt()
 	rCtx, _ := context.WithCancel(ctx)
+	cfg := app.Cfg()
 	UserPromptSubmit(
 		rCtx,
 		app.ChatHistory(),
 		app.Provider(),
-		app.Cfg().AllowWebSearch,
+		&cfg,
 		evTx,
 		)
 
@@ -330,10 +333,15 @@ func ReadConfig(cfg *app.AppConfig) error {
 			return ErrConfigCorrupted
 		}
 
+		var err error
 		switch key {
 		case "default_provider":
-			var err error
 			cfg.Provider, err = providers.ProviderTypeFromString(value)
+			if err != nil {
+				return ErrConfigCorrupted
+			}
+		case "default_model_preference":
+			cfg.ModelPreference, err = providers.ModelPreferenceFromString(value)
 			if err != nil {
 				return ErrConfigCorrupted
 			}
@@ -373,6 +381,31 @@ func InitConfig(cfg *app.AppConfig) error {
 		break
 	}
 
+	fmt.Println("Please select your default model preference:")
+	fmt.Println("\t1. Cheap (Model with a small cost, may not be the cheapest of all though)")
+	fmt.Println("\t2. Fast (Generally same as cheap but if a faster more costly alternative exist it will be favored)")
+	fmt.Println("\t3. Smart (More advanced models, generally higher cost)")
+
+	for {
+		var choice int
+		fmt.Print("> ")
+		n, err := fmt.Scan(&choice)
+		if err != nil || n != 1 {
+			fmt.Println("Please enter a single number matching the selected model preference")
+			fmt.Scanln()
+		}
+
+		switch choice {
+		case 1:
+			cfg.ModelPreference = providers.ModelPreferenceCheap
+		case 2:
+			cfg.ModelPreference = providers.ModelPreferenceFast
+		case 3:
+			cfg.ModelPreference = providers.ModelPreferenceSmart
+		}
+		break
+	}
+
 	cfgDir, err := os.UserConfigDir()
 	if err != nil {
 		return err
@@ -389,7 +422,11 @@ func InitConfig(cfg *app.AppConfig) error {
 		return ErrConfigCreation
 	}
 
-	if _, err := f.WriteString("default_provider=" + providers.ProviderTypeToString(cfg.Provider)); err != nil {
+	if _, err := f.WriteString("default_provider=" + providers.ProviderTypeToString(cfg.Provider) + "\n"); err != nil {
+		return ErrConfigCreation
+	}
+
+	if _, err := f.WriteString("default_model_preference=" + providers.ModelPreferenceToString(cfg.ModelPreference)); err != nil {
 		return ErrConfigCreation
 	}
 
@@ -397,9 +434,16 @@ func InitConfig(cfg *app.AppConfig) error {
 }
 
 func main() {
-	cfg := app.AppConfig{}
+	cfg := app.AppConfig {
+		ModelPreference: providers.ModelPreferenceCheap,
+		AllowWebSearch: false,
+		UseStdout: false,
+		UseColor: false,
+		SystemPrompt: SystemPrompt,
+	}
 
 	args := argset.NewArgSet()
+	args.Description("hello-llm (hello) allows you to prompt LLM of different providers for a quick chat or as part of a bigger pipeline.")
 	args.AddFlag(&cfg.AllowWebSearch, 'w', "web-search", false)
 	args.AddFlag(&cfg.UseStdout, 's', "stdout", false)
 	args.AddFlag(&cfg.UseColor, 'c', "colored-output", false)
