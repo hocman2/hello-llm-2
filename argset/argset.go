@@ -19,6 +19,7 @@ type argDef struct {
 	value any
 	short rune
 	long string
+	description string
 }
 
 type ArgSet struct {
@@ -26,6 +27,8 @@ type ArgSet struct {
 	ignoredArgs []string
 	description string
 }
+
+var ErrHelp = errors.New("help requested")
 
 func NewArgSet() ArgSet {
 	return ArgSet{}
@@ -39,16 +42,37 @@ func (a *ArgSet) Description(description string) {
 	a.description = description
 }
 
-func (a *ArgSet) AddFlag(retValue *bool, short rune, long string, defaultValue bool) {
-	a.args = append(a.args, argDef{retValue: retValue, argType: argTypeBool, value: defaultValue, short: short, long: long})
+func (a *ArgSet) AddFlag(retValue *bool, short rune, long string, defaultValue bool, description string) {
+	a.args = append(a.args, argDef{retValue: retValue, argType: argTypeBool, value: defaultValue, short: short, long: long, description: description})
 }
 
-func (a *ArgSet) AddInt(retValue *int, short rune, long string, defaultValue int) {
-	a.args = append(a.args, argDef{retValue: retValue, argType: argTypeInt, value: defaultValue, short: short, long: long})
+func (a *ArgSet) AddInt(retValue *int, short rune, long string, defaultValue int, description string) {
+	a.args = append(a.args, argDef{retValue: retValue, argType: argTypeInt, value: defaultValue, short: short, long: long, description: description})
 }
 
-func (a *ArgSet) AddString(retValue *string, short rune, long string, defaultValue string) {
-	a.args = append(a.args, argDef{retValue: retValue, argType: argTypeString, value: defaultValue, short: short, long: long})
+func (a *ArgSet) AddString(retValue *string, short rune, long string, defaultValue string, description string) {
+	a.args = append(a.args, argDef{retValue: retValue, argType: argTypeString, value: defaultValue, short: short, long: long, description: description})
+}
+
+func (a *ArgSet) PrintHelp() {
+	if a.description != "" {
+		fmt.Println(a.description)
+		fmt.Println()
+	}
+	fmt.Println("Usage: hello [OPTIONS] [PROMPT...]")
+	fmt.Println()
+	fmt.Println("Options:")
+	for _, def := range a.args {
+		var typeHint string
+		switch def.argType {
+		case argTypeInt:
+			typeHint = " <int>"
+		case argTypeString:
+			typeHint = " <string>"
+		}
+		fmt.Printf("  -%c, --%-20s %s\n", def.short, def.long+typeHint, def.description)
+	}
+	fmt.Printf("  -%c, --%-20s %s\n", 'h', "help", "Show this help message")
 }
 
 func (a *ArgSet) tryFindDef(long string, short rune) *argDef {
@@ -102,6 +126,10 @@ func (a *ArgSet) Parse(args []string) error {
 	argCursor := 0
 	for argCursor < len(args) {
 		arg := args[argCursor]
+
+		if arg == "-h" || arg == "--help" {
+			return ErrHelp
+		}
 
 		if arg[0] == '\\' {
 			a.ignoredArgs = append(a.ignoredArgs, args[argCursor])

@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"fmt"
 	"bytes"
 	"os"
 	"io"
@@ -30,7 +29,7 @@ func (p *OpenaiProvider) StartStreamingRequest(ctx context.Context, params Strea
 	p.Models.SetCurrentSelection(params.ModelPreference)
 	model := p.Models.Get()
 
-	url := fmt.Sprintf(p.Endpoint)
+	url := p.Endpoint
 
 	type ApiMessage struct {
 		Content string `json:"content"`

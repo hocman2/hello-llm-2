@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"bufio"
 	"strings"
+	"time"
 )
 
 type ProviderType int
@@ -152,7 +153,9 @@ type sseReader struct {
 }
 
 func startSseRequest(req *http.Request) (*sseReader, error) {
-	client := http.Client{Timeout: 0}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	client := http.Client{Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, ErrRequestSending

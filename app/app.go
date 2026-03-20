@@ -3,6 +3,7 @@ package app
 import (
 	"log"
 	"fmt"
+	"slices"
 	"github.com/hello-llm-2/providers"
 )
 
@@ -95,10 +96,10 @@ func (a *AppState) ContextAppend(extraContext string) {
 		Content: fmt.Sprintf("Here is some user provided context:\n%s", extraContext),
 	}
 
-	if len(a.chatHistory) == 1 {
-		a.chatHistory = append(a.chatHistory, msg)
+	if len(a.chatHistory) > 1 && a.chatHistory[1].Type == providers.MessageTypeSystem {
+		a.chatHistory[1] = msg
 	} else {
-		a.chatHistory = append(a.chatHistory[:1], append([]providers.AgnosticConversationMessage{msg}, a.chatHistory[1:]...)...)
+		a.chatHistory = slices.Insert(a.chatHistory, 1, msg)
 	}
 }
 

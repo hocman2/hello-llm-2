@@ -96,11 +96,11 @@ func ReceiveTuiEvent(tuiEv <-chan tcell.Event, appEvTx chan<- AppEvent) {
 			appEvTx <- AppEvent{Type: EvTermResize}
 		case *tcell.EventMouse:
 			buttons := ev.(*tcell.EventMouse).Buttons()
-			if buttons&tcell.WheelUp == 0 {
-				appEvTx <- AppEvent{Type: EvViewScrollDown}
-			}
-			if buttons&tcell.WheelDown == 0 {
+			if buttons&tcell.WheelUp != 0 {
 				appEvTx <- AppEvent{Type: EvViewScrollUp}
+			}
+			if buttons&tcell.WheelDown != 0 {
+				appEvTx <- AppEvent{Type: EvViewScrollDown}
 			}
 		}
 	}
@@ -289,10 +289,9 @@ func RunOneShot(ctx context.Context, app *app.AppState, args []string) {
 	prompt.WriteString(strings.Join(args, " "))
 	app.UserPromptSet(prompt.String())
 	app.ChatHistoryAppendUserPrompt()
-	rCtx, _ := context.WithCancel(ctx)
 	cfg := app.Cfg()
 	UserPromptSubmit(
-		rCtx,
+		ctx,
 		app.ChatHistory(),
 		app.Provider(),
 		&cfg,
@@ -319,6 +318,9 @@ var (
 
 func ReadConfig(cfg *app.AppConfig) error {
 	cfgDir, err := os.UserConfigDir()
+	if err != nil {
+		return err
+	}
 	cfgFile, err := os.Open(cfgDir + "/hello-llm.cfg")
 	if err != nil {
 		return err
@@ -410,7 +412,7 @@ func InitConfig(cfg *app.AppConfig) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(cfgDir + "/hello-llm.cfg", os.O_CREATE|os.O_RDWR, 0666)
+	f, err := os.OpenFile(cfgDir + "/hello-llm.cfg", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err
 	}
@@ -444,11 +446,14 @@ func main() {
 
 	args := argset.NewArgSet()
 	args.Description("hello-llm (hello) allows you to prompt LLM of different providers for a quick chat or as part of a bigger pipeline.")
-	args.AddFlag(&cfg.AllowWebSearch, 'w', "web-search", false)
-	args.AddFlag(&cfg.UseStdout, 's', "stdout", false)
-	args.AddFlag(&cfg.UseColor, 'c', "colored-output", false)
+	args.AddFlag(&cfg.AllowWebSearch, 'w', "web-search", false, "Enable web search (provider-dependent)")
+	args.AddFlag(&cfg.UseStdout, 's', "stdout", false, "One-shot mode: print response to stdout and exit")
+	args.AddFlag(&cfg.UseColor, 'c', "colored-output", false, "Enable colored output in the TUI")
 	err := args.Parse(os.Args[1:])
-	if err != nil {
+	if errors.Is(err, argset.ErrHelp) {
+		args.PrintHelp()
+		os.Exit(0)
+	} else if err != nil {
 		fmt.Fprintf(os.Stderr, err.Error())
 		os.Exit(1)
 	}
@@ -503,7 +508,7 @@ func main() {
 			if err != nil {
 				switch {
 				case errors.Is(err, os.ErrNotExist):
-					if err := syscall.Mkfifo(fifoPath, 0666); err != nil {
+					if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
 						cfg.NamedPipe.Failure = app.NamedPipeFailureOther
 					} else {
 						// I KNOW ITS MORE RESPECTFUL TO THE USER'S FS TO DO THAT BUT IT SLOWS DOWN SUBSEQUENT STARTUPS
