@@ -19,7 +19,7 @@ import (
 	"github.com/hello-llm-2/ui"
 	"github.com/hello-llm-2/argset"
 )
-const SystemPrompt string = "You are a helpful assistant prompted from a terminal shell. User expects straight to the point factual answers with minimal noise unless specified otherwise. Deliver response in plain text"
+const SystemPrompt string = "You are a helpful assistant prompted from a terminal shell. User expects straight to the point factual answers with minimal noise unless specified otherwise. Deliver response in plain text, limit markdown to only header tags (#). Be brief and informative."
 
 // Returns the new YOffset (if computed, else unchanged) and if the view is at the bottom or not
 func DrawScreen(app *app.AppState, screen tcell.Screen) (int, bool) {
