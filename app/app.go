@@ -28,6 +28,7 @@ type AppConfig struct {
 	AllowWebSearch bool
 	UseStdout bool
 	UseColor bool
+	NoGreet bool
 	SystemPrompt string
 	NamedPipe NamedPipeFile
 }

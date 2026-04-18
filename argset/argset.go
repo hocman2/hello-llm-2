@@ -70,7 +70,11 @@ func (a *ArgSet) PrintHelp() {
 		case argTypeString:
 			typeHint = " <string>"
 		}
-		fmt.Printf("  -%c, --%-20s %s\n", def.short, def.long+typeHint, def.description)
+		if (def.short != '\x00') {
+			fmt.Printf("  -%c, --%-20s %s\n", def.short, def.long+typeHint, def.description)
+		} else {
+			fmt.Printf("  --%-20s %s\n", def.long+typeHint, def.description)
+		}
 	}
 	fmt.Printf("  -%c, --%-20s %s\n", 'h', "help", "Show this help message")
 }
@@ -80,7 +84,7 @@ func (a *ArgSet) tryFindDef(long string, short rune) *argDef {
 		def := &a.args[i]
 		if len(long) > 0 && def.long == long {
 			return def
-		} else if def.short == short {
+		} else if def.short != '\x00' && def.short == short {
 			return def
 		}
 	}

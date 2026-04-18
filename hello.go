@@ -208,7 +208,9 @@ func RunEventLoop(ctx context.Context, app *app.AppState, args []string, screen 
 
 	if len(args) > 0 {
 		initalPrompt := strings.Builder{}
-		initalPrompt.WriteString("Hello, ")
+		if (!app.Cfg().NoGreet) {
+			initalPrompt.WriteString("Hello, ")
+		}
 		initalPrompt.WriteString(strings.Join(args, " "))
 		app.UserPromptSet(initalPrompt.String())
 		submitPrompt()
@@ -284,12 +286,15 @@ func RunOneShot(ctx context.Context, app *app.AppState, args []string) {
 	var evRx <-chan AppEvent = appEvCh
 	var evTx chan<- AppEvent = appEvCh
 
+	cfg := app.Cfg()
+
 	prompt := strings.Builder{}
-	prompt.WriteString("Hello, ")
+	if (!cfg.NoGreet) {
+		prompt.WriteString("Hello, ")
+	}
 	prompt.WriteString(strings.Join(args, " "))
 	app.UserPromptSet(prompt.String())
 	app.ChatHistoryAppendUserPrompt()
-	cfg := app.Cfg()
 	UserPromptSubmit(
 		ctx,
 		app.ChatHistory(),
@@ -444,6 +449,7 @@ func main() {
 		AllowWebSearch: false,
 		UseStdout: false,
 		UseColor: false,
+		NoGreet: false,
 		SystemPrompt: SystemPrompt,
 	}
 
@@ -473,6 +479,7 @@ func main() {
 	args.AddFlag(&cfg.UseColor, 'c', "colored-output", false, "Enable colored output in the TUI")
 	args.AddString(&argProvider, 'p', "provider", "", "Provider for this session (" + providerOptions + ")")
 	args.AddString(&argModelPreference, 'm', "model-preference", "", "Model preference for this session (" + modelPrefOptions + ")")
+	args.AddFlag(&cfg.NoGreet, '\x00', "no-greet", false, "Don't say hello to the machine, use at your own risks ...")
 	err := args.Parse(os.Args[1:])
 	if errors.Is(err, argset.ErrHelp) {
 		args.PrintHelp()
@@ -480,6 +487,11 @@ func main() {
 	} else if err != nil {
 		fmt.Fprintf(os.Stderr, err.Error())
 		os.Exit(1)
+	}
+
+	if (cfg.NoGreet) {
+		// Monster... Here's an extra memory allocation for you
+		cfg.SystemPrompt = cfg.SystemPrompt + "\n --- \n The user explicitly decided to not greet you. Be mean to him as a funny joke \n --- \n"
 	}
 	
 	if err := ReadConfig(&cfg); err != nil {
