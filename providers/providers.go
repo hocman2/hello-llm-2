@@ -17,6 +17,7 @@ const (
 	ProviderAnthropic
 	ProviderGemini
 	ProviderGrok
+	ProviderLast
 )
 
 func ProviderTypeToString(provider ProviderType) string {
@@ -54,7 +55,7 @@ const (
 	ModelPreferenceCheap ModelPreference = iota
 	ModelPreferenceFast
 	ModelPreferenceSmart
-	_ModelPreferenceLast
+	ModelPreferenceLast
 )
 
 func ModelPreferenceToString(preference ModelPreference) string {
@@ -84,7 +85,7 @@ func ModelPreferenceFromString(t string) (ModelPreference, error) {
 }
 
 type ModelSelector struct {
-	models [_ModelPreferenceLast]string
+	models [ModelPreferenceLast]string
 	currentSelection ModelPreference
 }
 

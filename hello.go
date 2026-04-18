@@ -321,7 +321,7 @@ func ReadConfig(cfg *app.AppConfig) error {
 	if err != nil {
 		return err
 	}
-	cfgFile, err := os.Open(cfgDir + "/hello-llm.cfg")
+	cfgFile, err := os.Open(cfgDir + "/hello-llm/cfg")
 	if err != nil {
 		return err
 	}
@@ -412,7 +412,10 @@ func InitConfig(cfg *app.AppConfig) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(cfgDir + "/hello-llm.cfg", os.O_CREATE|os.O_RDWR, 0600)
+	if err := os.MkdirAll(cfgDir + "/hello-llm", 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(cfgDir + "/hello-llm/cfg", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err
 	}
@@ -444,11 +447,32 @@ func main() {
 		SystemPrompt: SystemPrompt,
 	}
 
+	argProvider := ""
+	argModelPreference := ""
+
+	providerOptions := ""
+	for i := providers.ProviderType(0); i < providers.ProviderLast; i++ {
+		if providerOptions != "" {
+			providerOptions += ", "
+		}
+		providerOptions += providers.ProviderTypeToString(i)
+	}
+
+	modelPrefOptions := ""
+	for i := providers.ModelPreference(0); i < providers.ModelPreferenceLast; i++ {
+		if modelPrefOptions != "" {
+			modelPrefOptions += ", "
+		}
+		modelPrefOptions += providers.ModelPreferenceToString(i)
+	}
+
 	args := argset.NewArgSet()
 	args.Description("hello-llm (hello) allows you to prompt LLM of different providers for a quick chat or as part of a bigger pipeline.")
 	args.AddFlag(&cfg.AllowWebSearch, 'w', "web-search", false, "Enable web search (provider-dependent)")
 	args.AddFlag(&cfg.UseStdout, 's', "stdout", false, "One-shot mode: print response to stdout and exit")
 	args.AddFlag(&cfg.UseColor, 'c', "colored-output", false, "Enable colored output in the TUI")
+	args.AddString(&argProvider, 'p', "provider", "", "Provider for this session (" + providerOptions + ")")
+	args.AddString(&argModelPreference, 'm', "model-preference", "", "Model preference for this session (" + modelPrefOptions + ")")
 	err := args.Parse(os.Args[1:])
 	if errors.Is(err, argset.ErrHelp) {
 		args.PrintHelp()
@@ -472,7 +496,23 @@ func main() {
 		}
 	}
 
-	// cfg can now be populated with cmd line args and other stuff
+	if argProvider != "" {
+		p, err := providers.ProviderTypeFromString(argProvider)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid provider: %s\n", argProvider)
+			os.Exit(1)
+		}
+		cfg.Provider = p
+	}
+
+	if argModelPreference != "" {
+		m, err := providers.ModelPreferenceFromString(argModelPreference)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid model preference: %s\n", argModelPreference)
+			os.Exit(1)
+		}
+		cfg.ModelPreference = m
+	}
 
 	stdinStat, _ := os.Stdin.Stat()
 	pipedInput := ""
@@ -501,11 +541,13 @@ func main() {
 		// This is where windows users will lack
 		runtimeDir := xdg.RuntimeDir
 		if runtimeDir != "" {
-			fifoPath := runtimeDir + "/hello-llm"
+			helloDir := runtimeDir + "/hello-llm"
+			fifoPath := helloDir + "/pipe"
 			cfg.NamedPipe.Path = fifoPath
 
-			stats, err := os.Lstat(fifoPath)
-			if err != nil {
+			if err := os.MkdirAll(helloDir, 0700); err != nil {
+				cfg.NamedPipe.Failure = app.NamedPipeFailureOther
+			} else if stats, err := os.Lstat(fifoPath); err != nil {
 				switch {
 				case errors.Is(err, os.ErrNotExist):
 					if err := syscall.Mkfifo(fifoPath, 0600); err != nil {
